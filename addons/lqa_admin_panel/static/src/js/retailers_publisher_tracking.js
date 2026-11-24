@@ -79,6 +79,8 @@ export class LqaRetailersPublisherTracking extends Component {
             loadingJobs: false,
             loadingPending: false,
             lastUpdatedAt: 0,
+            confirmRetry: false,
+            retrying: false,
             now: Date.now(),
         });
 
@@ -125,7 +127,7 @@ export class LqaRetailersPublisherTracking extends Component {
 
     get runFolderName() {
         const execution = this.currentExecution;
-        if (!execution) {
+        if (!execution || !execution.folder_id || execution.folder_id === "-") {
             return "";
         }
         const folder = this.state.folders.find(
@@ -136,6 +138,12 @@ export class LqaRetailersPublisherTracking extends Component {
 
     get isLive() {
         return Boolean(this.state.run && !this.state.run.finished);
+    }
+
+    // Segun la guia de products-api: solo con el run terminado y con fallidos.
+    get canRetryFailed() {
+        const run = this.state.run;
+        return Boolean(run && run.finished && run.failed > 0);
     }
 
     get inFlight() {
@@ -389,6 +397,64 @@ export class LqaRetailersPublisherTracking extends Component {
         await this.refreshRun({ withJobs: true });
     }
 
+    openRetry() {
+        if (this.canRetryFailed) {
+            this.state.confirmRetry = true;
+        }
+    }
+
+    closeRetry() {
+        if (!this.state.retrying) {
+            this.state.confirmRetry = false;
+        }
+    }
+
+    async confirmRetryFailed() {
+        if (!this.canRetryFailed || this.state.retrying) {
+            return;
+        }
+        const sourceRunId = String(this.state.run.runId);
+        // Bloqueado mientras espera: dos clicks crearian dos runs de reintento.
+        this.state.retrying = true;
+        let result = null;
+        try {
+            result = await this.orm.call(
+                "lqa.retailers.publisher.service",
+                "retry_failed_publication",
+                [sourceRunId, true]
+            );
+        } catch (error) {
+            // Un error puede dejar un run a medias: no se reintenta solo.
+            this.notification.add(
+                error?.data?.message ||
+                    "No se pudo crear el reintento. Revisá Publicaciones recientes antes de volver a intentar.",
+                { type: "danger", sticky: true }
+            );
+        } finally {
+            this.state.retrying = false;
+            this.state.confirmRetry = false;
+        }
+        if (!result) {
+            return;
+        }
+        if (!result.run_id) {
+            this.notification.add(
+                "No hay fallidos para reintentar: ya están todos publicados en Fravega.",
+                { type: "info" }
+            );
+            return;
+        }
+        const skipped = result.already_published
+            ? ` (${this.formatNumber(result.already_published)} ya estaban publicados)`
+            : "";
+        this.notification.add(
+            `Publicación #${result.run_id} en marcha con ${this.formatNumber(result.total_jobs)} SKU de la #${sourceRunId}${skipped}.`,
+            { type: "success" }
+        );
+        await this.loadContext();
+        await this.selectRun(result.run_id);
+    }
+
     openPublish() {
         this.action.doAction("lqa_admin_panel.action_lqa_retailers_publisher_execute");
     }
@@ -434,7 +500,8 @@ export class LqaRetailersPublisherTracking extends Component {
         const folder = this.state.folders.find(
             (item) => String(item.id) === String(execution.folder_id)
         );
-        const name = folder ? folder.name : `Carpeta #${execution.folder_id}`;
+        const known = execution.folder_id && execution.folder_id !== "-";
+        const name = folder ? folder.name : known ? `Carpeta #${execution.folder_id}` : "Reintento";
         return `#${execution.run_id} · ${name} · ${this.formatDateTime(execution.triggered_at)}`;
     }
 

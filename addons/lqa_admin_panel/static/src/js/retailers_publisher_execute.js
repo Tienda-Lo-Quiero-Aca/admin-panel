@@ -261,6 +261,10 @@ export class LqaRetailersPublisherExecute extends Component {
     }
 
     folderName(folderId) {
+        // "-": reintento de un run lanzado fuera del panel, sin carpeta conocida.
+        if (!folderId || folderId === "-") {
+            return "—";
+        }
         const folder = this.state.folders.find(
             (item) => String(item.id) === String(folderId)
         );

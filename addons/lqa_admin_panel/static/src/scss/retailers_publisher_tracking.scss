@@ -362,6 +362,21 @@ a.o_lqa_pubt__logs {
     text-decoration: none;
 }
 
+.o_lqa_pubt__retry {
+    border-color: rgba(226, 58, 70, 0.3);
+    color: #e23a46;
+
+    &:hover:not(:disabled) {
+        border-color: rgba(226, 58, 70, 0.45) !important;
+        background: #fff1f2 !important;
+    }
+}
+
+.o_lqa_pubt__modal_hint {
+    margin-top: 10px !important;
+    font-size: 12px !important;
+}
+
 // ---------------------------------------------------------------- jobs
 
 .o_lqa_pubt__filters {

@@ -106,6 +106,16 @@
                                     </div>
                                 </div>
                                 <div class="o_lqa_pubt__run_actions">
+                                    <button
+                                        t-if="canRetryFailed"
+                                        type="button"
+                                        class="o_lqa_pubf__ghost o_lqa_pubt__retry"
+                                        t-att-disabled="state.retrying"
+                                        t-on-click="openRetry"
+                                    >
+                                        <i t-att-class="state.retrying ? 'fa fa-circle-o-notch fa-spin' : 'fa fa-repeat'"/>
+                                        Reintentar fallidas (<t t-esc="formatNumber(state.run.failed)"/>)
+                                    </button>
                                     <a
                                         class="o_lqa_pubf__ghost o_lqa_pubt__logs"
                                         t-att-href="runLogsUrl()"
@@ -309,6 +319,43 @@
                             <strong>La cola está vacía</strong>
                             <span>No hay SKU esperando para publicarse.</span>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <div t-if="state.confirmRetry and state.run" class="o_lqa_pubf__backdrop" t-on-click.self="closeRetry">
+                <div class="o_lqa_pubf__modal" role="dialog" aria-modal="true">
+                    <div class="o_lqa_pubf__modal_icon"><i class="fa fa-repeat"/></div>
+                    <h2>Reintentar las fallidas de la #<t t-esc="state.run.runId"/></h2>
+                    <p>
+                        Se crea una publicación nueva solo con los
+                        <strong t-esc="formatNumber(state.run.failed)"/> SKU fallidos.
+                        Los que ya estén publicados en Fravega (por ejemplo, porque otro run
+                        los publicó después) se descartan. La #<t t-esc="state.run.runId"/> no cambia.
+                    </p>
+                    <p class="o_lqa_pubt__modal_hint">
+                        Algunos pueden volver a fallar si el motivo sigue igual: por ejemplo,
+                        si Fravega no tiene categoría para el producto o falta un dato obligatorio.
+                    </p>
+                    <div class="o_lqa_pubf__modal_actions">
+                        <button
+                            type="button"
+                            class="o_lqa_pubf__ghost"
+                            t-att-disabled="state.retrying"
+                            t-on-click="closeRetry"
+                        >
+                            Cancelar
+                        </button>
+                        <button
+                            type="button"
+                            class="o_lqa_pubf__primary"
+                            t-att-disabled="state.retrying"
+                            t-on-click="confirmRetryFailed"
+                        >
+                            <i t-if="state.retrying" class="fa fa-circle-o-notch fa-spin"/>
+                            <t t-if="state.retrying">Creando…</t>
+                            <t t-else="">Reintentar</t>
+                        </button>
                     </div>
                 </div>
             </div>

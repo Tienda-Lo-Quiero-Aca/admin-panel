@@ -38,6 +38,7 @@ class LqaRetailersPublisherService(models.AbstractModel):
     # products-api no tiene prefijo /api: /health responde 200 y /api/health
     # da 404. El path con /api venia devolviendo 404 en cada publicacion.
     EXECUTE_PUBLICATION_PATH = "/publications/execute/run"
+    RETRY_FAILED_PATH = "/publications/runs/{run_id}/retry-failed"
     PUBLICATION_RUN_PATH = "/api/publication-runs/{run_id}"
     PUBLICATION_RUN_JOBS_PATH = "/api/publication-jobs/{run_id}/jobs"
     PENDING_PUBLICATIONS_PATH = "/api/publication-jobs/pending"
@@ -479,6 +480,72 @@ class LqaRetailersPublisherService(models.AbstractModel):
             }
         )
         return history.to_panel_dict()
+
+    @api.model
+    def retry_failed_publication(self, run_id, confirm=False):
+        """Reintenta los fallidos de un run: products-api crea un run NUEVO.
+
+        Descarta los SKU que ya estan publicados en Fravega (por ejemplo,
+        porque otro run los publico despues). El run original no cambia. Pide
+        confirm explicito porque crea un run real en produccion; y como el de
+        publicar, no se reintenta solo ante un error: se duplicarian jobs.
+        """
+        self._check_access()
+        if confirm is not True:
+            raise UserError(_("Confirmá el reintento: crea una publicación nueva."))
+        source_run_id = self._clean(run_id).lstrip("#")
+        if not source_run_id.isdigit():
+            raise UserError(_("El número de run no es válido."))
+
+        response = self.env["lqa.api.client"].request_absolute_json(
+            "POST",
+            self._join_url(
+                self._products_base_url(),
+                self.RETRY_FAILED_PATH.format(run_id=source_run_id),
+            ),
+            headers=self._products_headers(),
+            timeout=self._publication_timeout(),
+        )
+        payload = response if isinstance(response, dict) else {}
+        new_run_id = self._clean(payload.get("runId"))
+        result = {
+            "run_id": new_run_id,
+            "source_run_id": source_run_id,
+            "failed_jobs": self._as_int(payload.get("failedJobs"), 0),
+            "already_published": self._as_int(payload.get("alreadyPublished"), 0),
+            "total_jobs": self._as_int(payload.get("totalJobs"), 0),
+            "message": self._clean(payload.get("message")),
+        }
+        if not new_run_id:
+            # "Nothing to retry": todos los fallidos ya estaban publicados.
+            return result
+
+        # El run nuevo entra al historial como cualquier publicacion, con la
+        # carpeta del original si se lanzo desde el panel.
+        source = self.env["lqa.retailers.publication.run"].sudo().search(
+            [("run_id", "=", source_run_id)], limit=1
+        )
+        self.env["lqa.retailers.publication.run"].sudo().create(
+            {
+                "user_id": self.env.user.id,
+                "folder_id": source.folder_id or "-",
+                "marketplaces_json": source.marketplaces_json or json.dumps(["fravega"]),
+                "run_id": new_run_id,
+                "status": "QUEUED",
+                "jobs_count": result["total_jobs"],
+                "message": _(
+                    "Reintento de fallidas del #%(source)s: %(failed)s fallidas, "
+                    "%(published)s ya publicadas."
+                )
+                % {
+                    "source": source_run_id,
+                    "failed": result["failed_jobs"],
+                    "published": result["already_published"],
+                },
+                "response_json": json.dumps(payload, ensure_ascii=False, default=str),
+            }
+        )
+        return result
 
     @api.model
     def get_publication_history(self, limit=20):
