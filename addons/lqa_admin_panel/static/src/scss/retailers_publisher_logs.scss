@@ -1,0 +1,167 @@
+// Publicador · Logs
+//
+// La base (botones, tarjetas, tabla, inputs) sale de .o_lqa_pubf en
+// retailers_publisher.scss: aca solo va lo propio de esta vista.
+
+$publ-ink: #1f2937;
+$publ-muted: #6b7a90;
+$publ-muted-soft: #8d9bb0;
+$publ-border: #e3e9f1;
+$publ-chip: #f4f6fa;
+$publ-navy: #2d3277;
+$publ-amber: #b45309;
+$publ-amber-soft: #fef3c7;
+
+.o_lqa_publ__header_actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.o_lqa_publ {
+    // Los botones de esta vista son links (<a>): sin subrayado de Bootstrap.
+    a.o_lqa_pubf__ghost,
+    a.o_lqa_pubf__primary {
+        text-decoration: none;
+    }
+
+    a.o_lqa_pubf__primary:hover {
+        color: #fff;
+    }
+
+    a.is-disabled {
+        cursor: not-allowed;
+        opacity: 0.5;
+        pointer-events: none;
+    }
+}
+
+.o_lqa_publ__container {
+    display: flex;
+    max-width: 1500px;
+    flex-direction: column;
+    gap: 14px;
+    margin: 0 auto;
+}
+
+.o_lqa_publ__search {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding: 18px 20px;
+
+    h2 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 750;
+    }
+
+    span {
+        color: $publ-muted;
+        font-size: 12px;
+    }
+}
+
+.o_lqa_publ__search_form {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+
+    input[type="text"] {
+        width: 160px;
+    }
+}
+
+.o_lqa_publ__table {
+    min-width: 760px !important;
+}
+
+.o_lqa_publ__run {
+    font-variant-numeric: tabular-nums;
+}
+
+.o_lqa_publ__gone {
+    color: $publ-muted-soft;
+    font-style: italic;
+}
+
+.o_lqa_publ__muted {
+    color: $publ-muted;
+    white-space: nowrap;
+}
+
+.o_lqa_publ__actions {
+    text-align: right;
+    white-space: nowrap;
+
+    > * + * {
+        margin-left: 10px;
+    }
+}
+
+.o_lqa_publ__chip {
+    display: inline-flex;
+    height: 28px;
+    align-items: center;
+    gap: 6px;
+    padding: 0 11px;
+    border: 1px solid $publ-border;
+    border-radius: 8px;
+    background: #fff;
+    color: $publ-navy;
+    font-size: 12px;
+    font-weight: 650;
+    text-decoration: none;
+    transition:
+        background-color 0.14s ease,
+        border-color 0.14s ease;
+
+    i {
+        font-size: 10px;
+        opacity: 0.7;
+    }
+
+    &:hover {
+        border-color: rgba($publ-navy, 0.3);
+        background: rgba($publ-navy, 0.05);
+        color: $publ-navy;
+    }
+
+    &.is-warn {
+        color: $publ-amber;
+
+        &:hover {
+            border-color: rgba($publ-amber, 0.35);
+            background: $publ-amber-soft;
+            color: $publ-amber;
+        }
+    }
+}
+
+.o_lqa_publ__note {
+    display: flex;
+    gap: 8px;
+    margin: 0;
+    padding: 0 4px;
+    color: $publ-muted;
+    font-size: 12px;
+    line-height: 1.5;
+
+    i {
+        margin-top: 2px;
+        color: $publ-muted-soft;
+    }
+}
+
+@media (max-width: 860px) {
+    .o_lqa_publ__search_form {
+        width: 100%;
+
+        input[type="text"] {
+            flex: 1 1 auto;
+            width: auto;
+        }
+    }
+}

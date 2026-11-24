@@ -3,6 +3,7 @@
 import { Component, onMounted, onWillStart, onWillUnmount, useState } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+import { datadogRunLogsUrl } from "@lqa_admin_panel/js/publisher_logs_url";
 
 // La guia de products-api pide 3-5 s mientras la pantalla esta abierta.
 const POLL_MS = 4000;
@@ -334,6 +335,16 @@ export class LqaRetailersPublisherTracking extends Component {
         this.state.jobsStatus = "";
         this.state.jobsOffset = 0;
         await this.refreshRun({ withJobs: true });
+    }
+
+    // Fecha del run: la de madre (created_at) y, si no vino, la del historial.
+    runLogsUrl(onlyProblems = false) {
+        const run = this.state.run;
+        if (!run?.runId) {
+            return null;
+        }
+        const startedAt = run.createdAt || this.currentExecution?.triggered_at || null;
+        return datadogRunLogsUrl(run.runId, startedAt, { onlyProblems });
     }
 
     isCurrentRun(execution) {

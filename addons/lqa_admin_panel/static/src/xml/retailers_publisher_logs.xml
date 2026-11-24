@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="lqa_admin_panel.RetailersPublisherLogs">
+        <div class="o_lqa_pubf o_lqa_publ">
+            <header class="o_lqa_pubf__header">
+                <div>
+                    <p class="o_lqa_pubf__eyebrow">Retailers · Publicador</p>
+                    <h1>Logs</h1>
+                    <span>Lo que registró products-api por cada SKU, en Datadog. Se abre en una pestaña nueva.</span>
+                </div>
+                <div class="o_lqa_publ__header_actions">
+                    <a
+                        class="o_lqa_pubf__ghost"
+                        t-att-href="recentLogsUrl(true)"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Omitidos y fallidos de todas las publicaciones, últimas 24 h"
+                    >
+                        <i class="fa fa-exclamation-triangle"/>
+                        Problemas · 24 h
+                    </a>
+                    <a
+                        class="o_lqa_pubf__primary"
+                        t-att-href="recentLogsUrl()"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        <i class="fa fa-external-link"/>
+                        Todo · 24 h
+                    </a>
+                </div>
+            </header>
+
+            <div class="o_lqa_publ__container">
+                <!-- Buscar un run puntual -->
+                <div class="o_lqa_pubf__card o_lqa_publ__search">
+                    <div class="o_lqa_publ__search_text">
+                        <h2>Buscar una publicación</h2>
+                        <span>Pegá el número de run (por ejemplo 89).</span>
+                    </div>
+                    <div class="o_lqa_publ__search_form">
+                        <input
+                            type="text"
+                            inputmode="numeric"
+                            placeholder="Run ID"
+                            aria-label="Run ID"
+                            t-model="state.runQuery"
+                        />
+                        <a
+                            t-att-class="manualRunValid ? 'o_lqa_pubf__ghost' : 'o_lqa_pubf__ghost is-disabled'"
+                            t-att-href="manualRunValid ? manualLogsUrl(true) : null"
+                            t-att-aria-disabled="!manualRunValid"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            Solo problemas
+                        </a>
+                        <a
+                            t-att-class="manualRunValid ? 'o_lqa_pubf__primary' : 'o_lqa_pubf__primary is-disabled'"
+                            t-att-href="manualRunValid ? manualLogsUrl() : null"
+                            t-att-aria-disabled="!manualRunValid"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            <i class="fa fa-external-link"/>
+                            Abrir logs
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Publicaciones recientes -->
+                <div class="o_lqa_pubf__card o_lqa_pubf__products">
+                    <div class="o_lqa_pubf__toolbar">
+                        <div class="o_lqa_pubf__toolbar_title">
+                            <h3>Publicaciones recientes</h3>
+                            <span t-if="runs.length"><t t-esc="formatNumber(runs.length)"/> runs</span>
+                        </div>
+                        <button
+                            type="button"
+                            class="o_lqa_pubf__icon_btn"
+                            title="Actualizar"
+                            aria-label="Actualizar"
+                            t-att-disabled="state.loading"
+                            t-on-click="() => this.load()"
+                        >
+                            <i t-att-class="state.loading ? 'fa fa-refresh fa-spin' : 'fa fa-refresh'"/>
+                        </button>
+                    </div>
+
+                    <div class="o_lqa_pubf__table_wrap">
+                        <table class="o_lqa_pubf__table o_lqa_publ__table">
+                            <thead>
+                                <tr>
+                                    <th>Run</th>
+                                    <th>Carpeta</th>
+                                    <th class="is-num">SKU</th>
+                                    <th>Lanzada</th>
+                                    <th>Por</th>
+                                    <th/>
+                                </tr>
+                            </thead>
+                            <tbody t-if="state.loading and !state.history.length">
+                                <tr t-foreach="[1, 2, 3, 4]" t-as="row" t-key="row" class="is-skeleton">
+                                    <td><span/></td>
+                                    <td><span style="width:160px"/></td>
+                                    <td class="is-num"><span/></td>
+                                    <td><span/></td>
+                                    <td><span/></td>
+                                    <td><span/></td>
+                                </tr>
+                            </tbody>
+                            <tbody t-elif="runs.length">
+                                <tr t-foreach="runs" t-as="execution" t-key="execution.id">
+                                    <td><strong class="o_lqa_publ__run">#<t t-esc="execution.run_id"/></strong></td>
+                                    <td>
+                                        <span
+                                            t-att-class="folderExists(execution.folder_id) ? '' : 'o_lqa_publ__gone'"
+                                            t-esc="folderName(execution.folder_id)"
+                                        />
+                                    </td>
+                                    <td class="is-num" t-esc="formatNumber(execution.jobs_count)"/>
+                                    <td class="o_lqa_publ__muted" t-esc="formatDateTime(execution.triggered_at)"/>
+                                    <td class="o_lqa_publ__muted" t-esc="execution.user_name || '—'"/>
+                                    <td class="o_lqa_publ__actions">
+                                        <button
+                                            type="button"
+                                            class="o_lqa_pubf__link"
+                                            t-on-click="() => this.openTracking(execution.run_id)"
+                                        >
+                                            Seguimiento
+                                        </button>
+                                        <a
+                                            class="o_lqa_publ__chip is-warn"
+                                            t-att-href="runLogsUrl(execution, true)"
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            title="Solo omitidos y fallidos"
+                                        >
+                                            Problemas
+                                        </a>
+                                        <a
+                                            class="o_lqa_publ__chip"
+                                            t-att-href="runLogsUrl(execution)"
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                        >
+                                            Logs
+                                            <i class="fa fa-external-link"/>
+                                        </a>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div t-if="!state.loading and !runs.length" class="o_lqa_pubf__table_empty">
+                            <i class="fa fa-file-text-o"/>
+                            <strong>Todavía no hay publicaciones lanzadas desde el panel</strong>
+                            <span>Igual podés buscar cualquier run por su número.</span>
+                        </div>
+                    </div>
+                </div>
+
+                <p class="o_lqa_publ__note">
+                    <i class="fa fa-info-circle"/>
+                    Los links abren Datadog con tu sesión: si no estás logueado, te lo pide.
+                    Cada run se busca desde 10 minutos antes de lanzarse hasta 24 horas después.
+                    Los runs viejos pueden no aparecer si Datadog ya no los guarda.
+                </p>
+            </div>
+        </div>
+    </t>
+</templates>

@@ -351,6 +351,17 @@ $pubt-pending: #d97706;
     }
 }
 
+.o_lqa_pubt__run_actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+}
+
+a.o_lqa_pubt__logs {
+    text-decoration: none;
+}
+
 // ---------------------------------------------------------------- jobs
 
 .o_lqa_pubt__filters {

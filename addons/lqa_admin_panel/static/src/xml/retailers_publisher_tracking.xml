@@ -105,16 +105,28 @@
                                         </span>
                                     </div>
                                 </div>
-                                <button
-                                    type="button"
-                                    class="o_lqa_pubf__icon_btn"
-                                    title="Actualizar ahora"
-                                    aria-label="Actualizar ahora"
-                                    t-att-disabled="state.loadingRun"
-                                    t-on-click="manualRefresh"
-                                >
-                                    <i t-att-class="state.loadingRun ? 'fa fa-refresh fa-spin' : 'fa fa-refresh'"/>
-                                </button>
+                                <div class="o_lqa_pubt__run_actions">
+                                    <a
+                                        class="o_lqa_pubf__ghost o_lqa_pubt__logs"
+                                        t-att-href="runLogsUrl()"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        title="Abrir los logs de este run en Datadog"
+                                    >
+                                        <i class="fa fa-file-text-o"/>
+                                        Ver logs
+                                    </a>
+                                    <button
+                                        type="button"
+                                        class="o_lqa_pubf__icon_btn"
+                                        title="Actualizar ahora"
+                                        aria-label="Actualizar ahora"
+                                        t-att-disabled="state.loadingRun"
+                                        t-on-click="manualRefresh"
+                                    >
+                                        <i t-att-class="state.loadingRun ? 'fa fa-refresh fa-spin' : 'fa fa-refresh'"/>
+                                    </button>
+                                </div>
                             </div>
 
                             <div class="o_lqa_pubt__progress_row">
