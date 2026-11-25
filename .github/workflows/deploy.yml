@@ -9,6 +9,11 @@ on:
       - "deploy/**"
       - "docker-compose.prod.yml"
       - ".github/workflows/deploy.yml"
+      # La documentacion se publica en /docs: sin esto, un cambio de texto
+      # nunca llegaba al servidor.
+      - "README.md"
+      - "docs/**"
+      - "tests/**"
   workflow_dispatch:
 
 concurrency:
@@ -78,6 +83,9 @@ jobs:
 
       - name: Firmas de los metodos del addon
         run: python deploy/check_signatures.py
+
+      - name: Tests del sitio de documentacion
+        run: python -m unittest discover -s tests -v
 
   desplegar:
     needs: validar

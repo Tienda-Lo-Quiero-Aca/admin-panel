@@ -6,6 +6,7 @@
 #   - solo static/  -> restart (el bundle de assets se regenera al arrancar)
 #   - .py/.xml/.csv -> upgrade del modulo (hay registros o campos que migrar)
 #   - compose       -> up -d (restart no toma variables de entorno nuevas)
+#   - README.md     -> restart (ver abajo); docs/*.md no necesita nada
 #
 # Idempotente: si no hay commits nuevos no toca nada.
 set -euo pipefail
@@ -38,16 +39,19 @@ if [ "$BEFORE" = "$AFTER" ] && [ "${FORCE_DEPLOY:-0}" != "1" ]; then
     exit 0
 fi
 
-CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" -- addons docker-compose.prod.yml config deploy || true)
+# README.md entra por /docs montado como archivo suelto: git lo reemplaza por
+# uno nuevo y el contenedor sigue viendo el viejo hasta reiniciarse. docs/ va
+# montada como carpeta y se ve en caliente, asi que no figura aca.
+CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" -- addons docker-compose.prod.yml config deploy README.md || true)
 if [ "${FORCE_DEPLOY:-0}" = "1" ]; then
-    CHANGED=$(git ls-files addons docker-compose.prod.yml config deploy)
+    CHANGED=$(git ls-files addons docker-compose.prod.yml config deploy README.md)
 fi
 
 log "${BEFORE:0:7} -> ${AFTER:0:7}"
 git reset --hard --quiet "origin/$BRANCH"
 
 if [ -z "$CHANGED" ]; then
-    log "los commits no tocan el addon ni la infra; sin reinicio"
+    log "los commits no tocan el addon, la infra ni el README; sin reinicio"
     echo "$AFTER" > "$STATE_FILE"
     exit 0
 fi

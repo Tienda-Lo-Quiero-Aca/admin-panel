@@ -33,12 +33,16 @@ services:
       LQA_MERCADOLIBRE_PRICING_TIMEOUT_SECONDS: ${LQA_MERCADOLIBRE_PRICING_TIMEOUT_SECONDS:-300}
       ORDERS_API_URL: ${ORDERS_API_URL:-}
       ORDERS_API_TOKEN: ${ORDERS_API_TOKEN:-}
+      DOCS_SITE_USER: ${DOCS_SITE_USER:-}
+      DOCS_SITE_PASSWORD: ${DOCS_SITE_PASSWORD:-}
     ports:
       - "${ODOO_PORT:-8069}:8069"
     volumes:
       - odoo-web-data:/var/lib/odoo
       - ./config/odoo.conf:/etc/odoo/odoo.conf:ro
       - ./addons:/mnt/extra-addons
+      - ./README.md:/mnt/docs/README.md:ro
+      - ./docs:/mnt/docs/docs:ro
     command: ["odoo", "--dev=reload,qweb,xml"]
 
 volumes:
