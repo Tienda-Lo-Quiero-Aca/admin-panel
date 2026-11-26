@@ -2227,23 +2227,43 @@ class LqaMercadolibreCatalogService(models.AbstractModel):
         }.get(status, [])
 
     def _selection_summary(self, folder):
-        item_model = self.env["lqa.mercadolibre.selection.item"]
-        base = [("folder_id", "=", folder.id)]
-        counts = {
-            key: item_model.search_count(base + self._selection_status_domain(key))
-            for key in ("active", "paused", "closed", "out_of_stock", "no_data")
-        }
-        counts["all"] = item_model.search_count(base)
-        totals = item_model.read_group(
-            base, ["revenue:sum", "orders_count:sum", "units_sold:sum"], []
+        # Una sola pasada por las filas de la carpeta: con siete search_count
+        # una carpeta de 370.000 tardaba 30 segundos.
+        self.env.cr.execute(
+            """
+            SELECT count(*),
+                   count(*) FILTER (WHERE status = 'active'),
+                   count(*) FILTER (WHERE status = 'paused'),
+                   count(*) FILTER (WHERE status = 'closed'),
+                   count(*) FILTER (WHERE available_quantity <= 0 AND COALESCE(title, '') <> ''),
+                   count(*) FILTER (WHERE COALESCE(title, '') = ''),
+                   COALESCE(sum(revenue), 0),
+                   COALESCE(sum(orders_count), 0),
+                   COALESCE(sum(units_sold), 0)
+              FROM lqa_mercadolibre_selection_item
+             WHERE folder_id = %s
+            """,
+            (folder.id,),
         )
-        totals = totals[0] if totals else {}
+        row = self.env.cr.fetchone()
         return {
-            "counts": counts,
-            "revenue": totals.get("revenue") or 0,
-            "orders": totals.get("orders_count") or 0,
-            "units": totals.get("units_sold") or 0,
+            "counts": {
+                "all": row[0],
+                "active": row[1],
+                "paused": row[2],
+                "closed": row[3],
+                "out_of_stock": row[4],
+                "no_data": row[5],
+            },
+            "revenue": float(row[6] or 0),
+            "orders": int(row[7] or 0),
+            "units": int(row[8] or 0),
         }
+
+    @api.model
+    def get_selection_summary(self, folder_id):
+        self._check_access()
+        return self._selection_summary(self._get_folder(folder_id))
 
     @api.model
     def rename_selection_folder(self, folder_id, name):

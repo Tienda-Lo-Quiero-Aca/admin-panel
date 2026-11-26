@@ -232,6 +232,16 @@ class LqaMercadolibreSelectionItem(models.Model):
         ),
     ]
 
+    def init(self):
+        # La lista de una carpeta se ordena por ultima edicion: con carpetas de
+        # cientos de miles de filas, sin este indice cada pagina ordena todo.
+        self.env.cr.execute(
+            """
+            CREATE INDEX IF NOT EXISTS lqa_meli_selection_item_folder_recent_idx
+                ON lqa_mercadolibre_selection_item (folder_id, write_date DESC, id DESC)
+            """
+        )
+
     def to_panel_dict(self):
         self.ensure_one()
         payload = {}

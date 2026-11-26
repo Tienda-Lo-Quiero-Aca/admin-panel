@@ -180,6 +180,8 @@ export class LqaMercadolibreSelections extends Component {
         this.state.offset = 0;
         this.state.renaming = false;
         this.state.summary = null;
+        this.state.products = [];
+        this.state.pagination = {};
         this.clearSelection();
         await this.loadProducts(true);
     }
@@ -194,6 +196,11 @@ export class LqaMercadolibreSelections extends Component {
             return;
         }
         const folderId = this.state.selectedFolderId;
+        // El resumen va aparte: en carpetas enormes tarda mas que la pagina y
+        // no tiene por que demorar la lista.
+        if (withSummary) {
+            this.loadSummary(folderId);
+        }
         this.state.loadingProducts = true;
         try {
             const response = await this.orm.call(
@@ -206,7 +213,7 @@ export class LqaMercadolibreSelections extends Component {
                     this.state.search,
                     this.state.status,
                     this.state.sort,
-                    withSummary,
+                    false,
                 ]
             );
             if (folderId !== this.state.selectedFolderId) {
@@ -214,9 +221,6 @@ export class LqaMercadolibreSelections extends Component {
             }
             this.state.products = response.products || [];
             this.state.pagination = response.pagination || {};
-            if (response.summary) {
-                this.state.summary = response.summary;
-            }
             if (response.folder) {
                 this.updateFolder(response.folder);
             }
@@ -224,6 +228,21 @@ export class LqaMercadolibreSelections extends Component {
             this.notification.add(error?.data?.message || "No se pudieron cargar las publicaciones.", { type: "danger" });
         } finally {
             this.state.loadingProducts = false;
+        }
+    }
+
+    async loadSummary(folderId) {
+        try {
+            const summary = await this.orm.silent.call(
+                "lqa.mercadolibre.catalog.service",
+                "get_selection_summary",
+                [Number(folderId)]
+            );
+            if (folderId === this.state.selectedFolderId) {
+                this.state.summary = summary;
+            }
+        } catch {
+            // Sin resumen la carpeta se usa igual.
         }
     }
 
