@@ -46,6 +46,11 @@ class LqaRetailersPublisherService(models.AbstractModel):
     # crea nada, asi que conviene no ofrecerlo.
     PUBLICATION_MARKETPLACES = ("fravega",)
     MAX_IMPORT_ROWS = 10000
+    # Los datos de cada producto de la carpeta (titulo, foto, precio...) salen
+    # de Catalog Sync: madre solo guarda MLA + SKU. Una consulta por MLA tarda
+    # ~0,7 s, asi que se piden en paralelo.
+    CATALOG_ENRICH_CONCURRENCY = 16
+    CATALOG_ENRICH_TIMEOUT = 15
     MAX_UPLOAD_BYTES = 20 * 1024 * 1024
     MAX_XLSX_XML_BYTES = 40 * 1024 * 1024
     BULK_BATCH_SIZE = 500
@@ -285,7 +290,9 @@ class LqaRetailersPublisherService(models.AbstractModel):
             total_pages = max((total + limit - 1) // limit, 1) if limit else 1
 
         return {
-            "products": [self._normalize_favorite(item) for item in items],
+            "products": self._enrich_from_catalog(
+                [self._normalize_favorite(item) for item in items]
+            ),
             "pagination": {
                 "page": page,
                 "limit": limit,
@@ -1029,6 +1036,79 @@ class LqaRetailersPublisherService(models.AbstractModel):
                 0,
             ),
         }
+
+    def _enrich_from_catalog(self, products):
+        """Completa cada producto con lo que dice Catalog Sync.
+
+        madre ya no tiene los datos de la mayoria de las publicaciones (su
+        tabla mercadolibre_products quedo vieja): de ahi venian el titulo, la
+        foto, la marca y el precio, y por eso la carpeta mostraba "Producto sin
+        titulo" con todo en cero. Si Catalog Sync no responde, la carpeta se
+        muestra igual con lo que haya.
+        """
+        item_ids = list(
+            dict.fromkeys(
+                product["product_id"] for product in products if product.get("product_id")
+            )
+        )
+        if not item_ids:
+            return products
+        try:
+            endpoint = self.env["lqa.mercadolibre.catalog.service"]._catalog_endpoint()
+        except UserError:
+            return products
+        timeout = http_timeout(self.CATALOG_ENRICH_TIMEOUT)
+
+        def fetch(item_id):
+            try:
+                response = requests.get(
+                    endpoint,
+                    params={"itemId": item_id, "limit": 1},
+                    headers={"Accept": "application/json"},
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                rows = (response.json() or {}).get("products") or []
+            except (requests.RequestException, ValueError, AttributeError):
+                return item_id, None
+            return item_id, rows[0] if rows and isinstance(rows[0], dict) else None
+
+        with ThreadPoolExecutor(
+            max_workers=min(self.CATALOG_ENRICH_CONCURRENCY, len(item_ids))
+        ) as executor:
+            found = dict(executor.map(fetch, item_ids))
+
+        missing = 0
+        for product in products:
+            data = found.get(product.get("product_id"))
+            if not data:
+                missing += 1
+                continue
+            thumbnail = self._clean(data.get("thumbnail"))
+            if thumbnail.startswith("http://"):
+                thumbnail = "https://" + thumbnail.removeprefix("http://")
+            product.update(
+                {
+                    "title": self._clean(data.get("title")) or product["title"],
+                    "image": thumbnail or product.get("image", ""),
+                    "brand": self._clean(data.get("brand")) or product.get("brand", ""),
+                    "category_id": self._clean(data.get("category_id"))
+                    or product.get("category_id", ""),
+                    "price": self._as_float(data.get("price"), product.get("price")),
+                    "stock": self._as_int(
+                        data.get("available_quantity"), product.get("stock", 0)
+                    ),
+                    "visits": self._as_int(data.get("total_visits"), product.get("visits", 0)),
+                    "orders": self._as_int(data.get("units_sold"), product.get("orders", 0)),
+                }
+            )
+        if missing:
+            _logger.info(
+                "Catalog Sync no devolvio %s de %s productos de la carpeta",
+                missing,
+                len(products),
+            )
+        return products
 
     def _run_jobs_params(self, limit, offset, status):
         # madre filtra por estado del lado del servidor; filtrar en el panel

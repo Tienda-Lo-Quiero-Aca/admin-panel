@@ -4,50 +4,67 @@ import { Component, onWillStart, onWillUnmount, useState } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 
-const defaultFilters = () => ({
-    search: "",
-    brand: "",
-    categoryId: "",
-    domainId: "",
-    status: "",
-    condition: "",
-    listingTypeId: "",
-    skuPrefix: "",
-    hasOrders: "",
-    hasVisits: "",
-    minOrders: "",
-    minRevenue: "",
-    createdFrom: "",
-    createdTo: "",
-    sortBy: "revenue",
-    sortOrder: "desc",
-    limit: "100",
-    offset: 0,
-});
-
-// Filtros que viven en "Más filtros"; si alguno esta aplicado, el panel abre.
-const ADVANCED_KEYS = [
-    "brand", "categoryId", "domainId", "condition", "listingTypeId", "skuPrefix",
-    "hasOrders", "hasVisits", "minOrders", "minRevenue", "createdFrom", "createdTo",
-];
-
-// Lo que cuenta como filtro (no orden ni paginacion), con su rotulo para chips.
-const FILTER_LABELS = {
+// Filtros de un valor, con su rotulo para las etiquetas de filtros aplicados.
+const SIMPLE_FILTERS = {
     search: "Búsqueda",
     status: "Estado",
     brand: "Marca",
     categoryId: "Categoría",
     domainId: "Dominio",
+    sku: "SKU",
+    skuPrefix: "SKU empieza con",
     condition: "Condición",
     listingTypeId: "Tipo",
-    skuPrefix: "SKU empieza con",
+    currencyId: "Moneda",
     hasOrders: "Con órdenes",
     hasVisits: "Con visitas",
-    minOrders: "Órdenes ≥",
-    minRevenue: "Facturación ≥",
-    createdFrom: "Creado desde",
-    createdTo: "Creado hasta",
 };
+
+// Rangos (minimo y maximo) que acepta Catalog Sync.
+const RANGE_FILTERS = [
+    { id: "price", label: "Precio", min: "minPrice", max: "maxPrice", kind: "money" },
+    { id: "stock", label: "Stock disponible", min: "minAvailableQuantity", max: "maxAvailableQuantity", kind: "number" },
+    { id: "revenue", label: "Facturación", min: "minRevenue", max: "maxRevenue", kind: "money" },
+    { id: "orders", label: "Órdenes", min: "minOrders", max: "maxOrders", kind: "number" },
+    { id: "units", label: "Unidades vendidas", min: "minUnitsSold", max: "maxUnitsSold", kind: "number" },
+    { id: "visits", label: "Visitas", min: "minVisits", max: "maxVisits", kind: "number" },
+    { id: "conversion", label: "Conversión (%)", min: "minOrderConversionRate", max: "maxOrderConversionRate", kind: "percent" },
+    { id: "ticket", label: "Ticket promedio", min: "minAvgTicket", max: "maxAvgTicket", kind: "money" },
+    { id: "catalogSold", label: "Ventas de catálogo", min: "minCatalogSoldQuantity", max: "maxCatalogSoldQuantity", kind: "number" },
+    { id: "daysToFirst", label: "Días hasta la 1ª venta", min: "minDaysToFirstOrder", max: "maxDaysToFirstOrder", kind: "number" },
+];
+
+const DATE_FILTERS = [
+    { id: "created", label: "Publicada", min: "createdFrom", max: "createdTo", kind: "date" },
+    { id: "firstOrder", label: "Primera venta", min: "firstOrderFrom", max: "firstOrderTo", kind: "date" },
+    { id: "lastOrder", label: "Última venta", min: "lastOrderFrom", max: "lastOrderTo", kind: "date" },
+];
+
+const RANGES = [...RANGE_FILTERS, ...DATE_FILTERS];
+
+const FILTER_KEYS = [
+    ...Object.keys(SIMPLE_FILTERS),
+    ...RANGES.flatMap((range) => [range.min, range.max]),
+];
+
+// Filtros que viven en "Más filtros"; si alguno esta aplicado, el panel abre.
+const ADVANCED_KEYS = FILTER_KEYS.filter((key) => key !== "search" && key !== "status");
+
+const VALUE_LABELS = {
+    status: { active: "Activa", paused: "Pausada", closed: "Cerrada", under_review: "En revisión" },
+    condition: { new: "Nuevo", used: "Usado", refurbished: "Reacondicionado" },
+    listingTypeId: { gold_special: "Clásica", gold_pro: "Premium", free: "Gratuita" },
+    hasOrders: { true: "Sí", false: "No" },
+    hasVisits: { true: "Sí", false: "No" },
+};
+
+const defaultFilters = () => ({
+    ...Object.fromEntries(FILTER_KEYS.map((key) => [key, ""])),
+    sortBy: "revenue",
+    sortOrder: "desc",
+    limit: "100",
+    offset: 0,
+});
 
 const STATUS_OPTIONS = [
     { id: "", label: "Todas" },
@@ -77,41 +94,76 @@ const MAX_FOLDER_PRODUCTS = 500000;
 // Igual que EXPORT_MAX_ROWS del servidor (el servidor lo informa en el job).
 const MAX_EXPORT_ROWS = 500000;
 // Medido contra Catalog Sync en produccion: 15-55 s por pagina de 1.000.
-const EXPORT_SECONDS_PER_PAGE = 30;
+// Se piden 4 paginas a la vez: ~10 s por cada 1.000 productos.
+const EXPORT_SECONDS_PER_PAGE = 10;
+const EXPORT_DISMISSED_KEY = "lqa_meli_export_dismissed";
 const VIEW_KEY = "lqa_meli_catalog_view";
 
 const CSV_COLUMNS = [
-    { key: "item_id", label: "MLA" },
-    { key: "title", label: "Título" },
-    { key: "sku", label: "SKU" },
-    { key: "brand", label: "Marca" },
-    { key: "status", label: "Estado" },
-    { key: "condition", label: "Condición" },
-    { key: "listing_type_id", label: "Tipo de publicación" },
-    { key: "price", label: "Precio" },
-    { key: "currency_id", label: "Moneda" },
-    { key: "available_quantity", label: "Stock" },
-    { key: "revenue", label: "Facturación" },
-    { key: "orders_count", label: "Órdenes" },
-    { key: "units_sold", label: "Unidades vendidas" },
-    { key: "total_visits", label: "Visitas" },
-    { key: "order_conversion_rate", label: "Conversión de órdenes" },
-    { key: "category_id", label: "Categoría" },
-    { key: "domain_id", label: "Dominio" },
-    { key: "permalink", label: "Link" },
-    { key: "date_created", label: "Fecha de creación" },
-    { key: "last_updated", label: "Última actualización" },
-    { key: "catalog_sold_quantity", label: "Ventas de catálogo" },
-    { key: "avg_ticket", label: "Ticket promedio" },
-    { key: "first_order_date", label: "Primera orden" },
-    { key: "last_order_date", label: "Última orden" },
-    { key: "unit_conversion_rate", label: "Conversión de unidades" },
+    { key: "item_id", label: "MLA", group: "Publicación" },
+    { key: "title", label: "Título", group: "Publicación" },
+    { key: "sku", label: "SKU", group: "Publicación" },
+    { key: "brand", label: "Marca", group: "Publicación" },
+    { key: "status", label: "Estado", group: "Publicación" },
+    { key: "condition", label: "Condición", group: "Publicación" },
+    { key: "listing_type_id", label: "Tipo de publicación", group: "Publicación" },
+    { key: "category_id", label: "Categoría", group: "Publicación" },
+    { key: "domain_id", label: "Dominio", group: "Publicación" },
+    { key: "permalink", label: "Link", group: "Publicación" },
+    { key: "price", label: "Precio", group: "Precio y stock" },
+    { key: "currency_id", label: "Moneda", group: "Precio y stock" },
+    { key: "available_quantity", label: "Stock", group: "Precio y stock" },
+    { key: "revenue", label: "Facturación", group: "Rendimiento" },
+    { key: "orders_count", label: "Órdenes", group: "Rendimiento" },
+    { key: "units_sold", label: "Unidades vendidas", group: "Rendimiento" },
+    { key: "total_visits", label: "Visitas", group: "Rendimiento" },
+    { key: "order_conversion_rate", label: "Conversión de órdenes", group: "Rendimiento" },
+    { key: "unit_conversion_rate", label: "Conversión de unidades", group: "Rendimiento" },
+    { key: "avg_ticket", label: "Ticket promedio", group: "Rendimiento" },
+    { key: "catalog_sold_quantity", label: "Ventas de catálogo", group: "Rendimiento" },
+    { key: "date_created", label: "Fecha de creación", group: "Fechas" },
+    { key: "last_updated", label: "Última actualización", group: "Fechas" },
+    { key: "first_order_date", label: "Primera orden", group: "Fechas" },
+    { key: "last_order_date", label: "Última orden", group: "Fechas" },
 ];
 
-const DEFAULT_EXPORT_COLUMNS = [
-    "item_id", "title", "sku", "status", "listing_type_id",
-    "price", "available_quantity", "category_id", "permalink",
+const COLUMN_GROUPS = ["Publicación", "Precio y stock", "Rendimiento", "Fechas"];
+
+const EXPORT_PRESETS = {
+    basic: [
+        "item_id", "title", "sku", "status", "listing_type_id",
+        "price", "available_quantity", "category_id", "permalink",
+    ],
+    performance: [
+        "item_id", "title", "sku", "brand", "status", "price", "available_quantity",
+        "revenue", "orders_count", "units_sold", "total_visits", "order_conversion_rate",
+        "avg_ticket", "last_order_date",
+    ],
+};
+
+const EXPORT_PRESET_OPTIONS = [
+    { id: "basic", label: "Básicas" },
+    { id: "performance", label: "Rendimiento" },
+    { id: "all", label: "Todas" },
 ];
+
+const DEFAULT_EXPORT_COLUMNS = EXPORT_PRESETS.basic;
+
+function readStorage(key) {
+    try {
+        return window.localStorage.getItem(key) || "";
+    } catch {
+        return "";
+    }
+}
+
+function writeStorage(key, value) {
+    try {
+        window.localStorage.setItem(key, value);
+    } catch {
+        // Solo es una preferencia.
+    }
+}
 
 function readView() {
     try {
@@ -181,6 +233,12 @@ export class LqaMercadolibreCatalog extends Component {
             startingExport: false,
             cancellingExport: false,
             exportJob: null,
+            // Detalle desplegable: fila abierta en la tabla o panel en tarjetas.
+            detailKey: "",
+            detailProduct: null,
+            showExportHistory: false,
+            exportHistory: [],
+            exportHistoryLoading: false,
         });
         this.state.exportColumns = Object.fromEntries(
             CSV_COLUMNS.map((column) => [column.key, DEFAULT_EXPORT_COLUMNS.includes(column.key)])
@@ -248,40 +306,97 @@ export class LqaMercadolibreCatalog extends Component {
         if (this.state.loading) {
             return false;
         }
-        return Object.keys(FILTER_LABELS).some(
+        return FILTER_KEYS.some(
             (key) => String(this.state.filters[key] ?? "") !== String(this.state.appliedFilters[key] ?? "")
         );
     }
 
     get advancedActiveCount() {
-        return ADVANCED_KEYS.filter((key) => this.filterIsSet(this.state.appliedFilters, key)).length;
+        return this.chipsFor(this.state.appliedFilters).filter(
+            (chip) => chip.keys.some((key) => ADVANCED_KEYS.includes(key))
+        ).length;
     }
 
     get activeChips() {
-        const applied = this.state.appliedFilters;
-        return Object.keys(FILTER_LABELS)
-            .filter((key) => this.filterIsSet(applied, key))
-            .map((key) => ({ key, label: FILTER_LABELS[key], value: this.chipValue(key, applied[key]) }));
+        return this.chipsFor(this.state.appliedFilters);
     }
 
-    chipValue(key, value) {
-        if (key === "status") {
-            return this.statusLabel(value);
+    get rangeFilters() {
+        return RANGE_FILTERS;
+    }
+
+    get dateFilters() {
+        return DATE_FILTERS;
+    }
+
+    // Etiquetas legibles de un juego de filtros: sirve para los filtros
+    // aplicados y para mostrar con que filtro se hizo cada exportacion.
+    chipsFor(filters) {
+        filters = filters || {};
+        const chips = [];
+        for (const [key, label] of Object.entries(SIMPLE_FILTERS)) {
+            if (this.filterIsSet(filters, key)) {
+                chips.push({ id: key, keys: [key], label, value: this.simpleValue(key, filters[key]) });
+            }
         }
-        if (key === "hasOrders" || key === "hasVisits") {
-            return value === "true" ? "Sí" : "No";
+        for (const range of RANGES) {
+            const hasMin = this.filterIsSet(filters, range.min);
+            const hasMax = this.filterIsSet(filters, range.max);
+            if (!hasMin && !hasMax) {
+                continue;
+            }
+            const min = hasMin ? this.rangeValue(range.kind, filters[range.min]) : "";
+            const max = hasMax ? this.rangeValue(range.kind, filters[range.max]) : "";
+            let value;
+            if (hasMin && hasMax) {
+                value = `${min} – ${max}`;
+            } else if (range.kind === "date") {
+                value = hasMin ? `desde ${min}` : `hasta ${max}`;
+            } else {
+                value = hasMin ? `≥ ${min}` : `≤ ${max}`;
+            }
+            chips.push({ id: range.id, keys: [range.min, range.max], label: range.label, value });
         }
-        if (key === "minRevenue") {
+        return chips;
+    }
+
+    simpleValue(key, value) {
+        const labels = VALUE_LABELS[key];
+        if (!labels) {
+            return String(value);
+        }
+        return String(value)
+            .split(",")
+            .map((part) => labels[part.trim()] || part.trim())
+            .join(", ");
+    }
+
+    rangeValue(kind, value) {
+        if (kind === "money") {
             return this.formatCurrency(value);
         }
-        if (key === "createdFrom" || key === "createdTo") {
+        if (kind === "percent") {
+            return this.formatPercent(value);
+        }
+        if (kind === "date") {
             return this.formatDate(value);
         }
-        return String(value);
+        return this.formatNumber(value);
     }
 
-    async removeChip(key) {
-        this.state.filters[key] = defaultFilters()[key];
+    async removeChip(chip) {
+        const defaults = defaultFilters();
+        for (const key of chip.keys) {
+            this.state.filters[key] = defaults[key];
+        }
+        await this.applyFilters();
+    }
+
+    async clearAdvanced() {
+        const defaults = defaultFilters();
+        for (const key of ADVANCED_KEYS) {
+            this.state.filters[key] = defaults[key];
+        }
         await this.applyFilters();
     }
 
@@ -352,6 +467,7 @@ export class LqaMercadolibreCatalog extends Component {
     }
 
     async loadProducts() {
+        this.state.detailKey = "";
         if (this.catalogQueryTimer) {
             clearTimeout(this.catalogQueryTimer);
         }
@@ -503,7 +619,11 @@ export class LqaMercadolibreCatalog extends Component {
                 "get_active_catalog_export",
                 []
             );
-            this.state.exportJob = job || null;
+            // Una exportacion terminada que el usuario ya cerro no vuelve a
+            // aparecer como tarjeta (queda en "Mis exportaciones").
+            const dismissed = readStorage(EXPORT_DISMISSED_KEY);
+            const active = ["queued", "running"].includes(job?.state);
+            this.state.exportJob = job && (active || String(job.id) !== dismissed) ? job : null;
             this.scheduleExportPoll();
         } catch {
             this.state.exportJob = null;
@@ -606,11 +726,156 @@ export class LqaMercadolibreCatalog extends Component {
         this.state.exportColumns[key] = !this.state.exportColumns[key];
     }
 
+    get exportColumnGroups() {
+        return COLUMN_GROUPS.map((group) => ({
+            group,
+            columns: CSV_COLUMNS.filter((column) => column.group === group),
+        }));
+    }
+
+    get exportPresetOptions() {
+        return EXPORT_PRESET_OPTIONS;
+    }
+
+    get exportPreset() {
+        const selected = this.selectedExportColumns;
+        if (selected.length === CSV_COLUMNS.length) {
+            return "all";
+        }
+        for (const [id, keys] of Object.entries(EXPORT_PRESETS)) {
+            if (keys.length === selected.length && keys.every((key) => selected.includes(key))) {
+                return id;
+            }
+        }
+        return "custom";
+    }
+
     selectExportColumns(mode) {
         for (const column of CSV_COLUMNS) {
             this.state.exportColumns[column.key] =
-                mode === "all" ? true : mode === "basic" && DEFAULT_EXPORT_COLUMNS.includes(column.key);
+                mode === "all" || Boolean(EXPORT_PRESETS[mode]?.includes(column.key));
         }
+    }
+
+    toggleExportGroup(group) {
+        const columns = CSV_COLUMNS.filter((column) => column.group === group);
+        const select = !columns.every((column) => this.state.exportColumns[column.key]);
+        for (const column of columns) {
+            this.state.exportColumns[column.key] = select;
+        }
+    }
+
+    isGroupSelected(group) {
+        return CSV_COLUMNS.filter((column) => column.group === group).every(
+            (column) => this.state.exportColumns[column.key]
+        );
+    }
+
+    setExportParts(count) {
+        this.state.exportPartCount = String(count);
+    }
+
+    get exportPartOptions() {
+        return [1, 2, 3, 5, 10];
+    }
+
+    get exportJobChips() {
+        return this.chipsFor(this.state.exportJob?.filters);
+    }
+
+    // En que esta la exportacion, en palabras.
+    get exportStage() {
+        const job = this.state.exportJob;
+        if (!job) {
+            return "";
+        }
+        if (job.state === "queued" && !job.processed) {
+            return "En cola, arranca en segundos…";
+        }
+        if (!job.matched) {
+            return "Contando los productos del filtro…";
+        }
+        if (job.processed >= job.matched) {
+            return "Armando el Excel…";
+        }
+        return `Bajando productos: ${this.formatNumber(job.processed)} de ${this.formatNumber(job.matched)}`;
+    }
+
+    async openExportHistory() {
+        this.state.showExportHistory = true;
+        await this.loadExportHistory();
+    }
+
+    closeExportHistory() {
+        this.state.showExportHistory = false;
+    }
+
+    async loadExportHistory() {
+        this.state.exportHistoryLoading = true;
+        try {
+            this.state.exportHistory = await this.orm.call(
+                "lqa.mercadolibre.catalog.service",
+                "get_recent_catalog_exports",
+                [10]
+            );
+        } catch (error) {
+            this.notification.add(
+                error?.data?.message || "No se pudieron cargar las exportaciones.",
+                { type: "danger" }
+            );
+        } finally {
+            this.state.exportHistoryLoading = false;
+        }
+    }
+
+    exportStateLabel(job) {
+        return (
+            {
+                queued: "En cola",
+                running: "Exportando",
+                done: job?.expired ? "Vencida" : "Lista",
+                failed: "Falló",
+                cancelled: "Cancelada",
+            }[job?.state] || job?.state
+        );
+    }
+
+    exportStateTone(job) {
+        if (job?.state === "done") {
+            return job.expired ? "is-closed" : "is-active";
+        }
+        if (job?.state === "failed") {
+            return "is-failed";
+        }
+        if (job?.state === "cancelled") {
+            return "is-closed";
+        }
+        return "is-other";
+    }
+
+    formatDateTime(value) {
+        const date = parseServerDate(value);
+        if (!date) {
+            return "—";
+        }
+        return new Intl.DateTimeFormat("es-AR", {
+            day: "2-digit",
+            month: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+        }).format(date);
+    }
+
+    expiresLabel(job) {
+        const date = parseServerDate(job?.expiresAt);
+        if (!date) {
+            return "";
+        }
+        const days = Math.ceil((date.getTime() - Date.now()) / 86400000);
+        if (days <= 0) {
+            return "vence hoy";
+        }
+        return days === 1 ? "vence mañana" : `vence en ${days} días`;
     }
 
     async startExport() {
@@ -700,6 +965,9 @@ export class LqaMercadolibreCatalog extends Component {
     }
 
     dismissExport() {
+        if (this.state.exportJob?.id) {
+            writeStorage(EXPORT_DISMISSED_KEY, String(this.state.exportJob.id));
+        }
         this.state.exportJob = null;
     }
 
@@ -824,7 +1092,7 @@ export class LqaMercadolibreCatalog extends Component {
     }
 
     openSaveFiltered() {
-        if (!this.state.selectedFolderId || !this.state.pagination.total || this.filterExceedsFolderLimit) {
+        if (!this.state.pagination.total || this.filterExceedsFolderLimit) {
             return;
         }
         this.state.confirmSaveFiltered = true;
@@ -837,7 +1105,7 @@ export class LqaMercadolibreCatalog extends Component {
     }
 
     async saveFilteredSelectionToFolder() {
-        if (this.state.savingFilteredSelection) {
+        if (this.state.savingFilteredSelection || !this.state.selectedFolderId) {
             return;
         }
         this.state.savingFilteredSelection = true;
@@ -1026,6 +1294,123 @@ export class LqaMercadolibreCatalog extends Component {
 
     productKey(product) {
         return product?.item_id || product?.itemId || product?.sku || product?.permalink || "";
+    }
+
+    // ------------------------------------------------------------ detalle
+
+    isDetailOpen(product) {
+        return this.state.detailKey === this.productKey(product);
+    }
+
+    toggleDetail(product) {
+        const key = this.productKey(product);
+        this.state.detailKey = this.state.detailKey === key ? "" : key;
+    }
+
+    openDetailPanel(product) {
+        this.state.detailProduct = product;
+    }
+
+    closeDetailPanel() {
+        this.state.detailProduct = null;
+    }
+
+    async copyText(value, label) {
+        if (!value) {
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(String(value));
+            this.notification.add(`${label} copiado: ${value}`, { type: "success" });
+        } catch {
+            this.notification.add("No se pudo copiar al portapapeles.", { type: "warning" });
+        }
+    }
+
+    // Todo lo que trae Catalog Sync de una publicacion, agrupado y legible.
+    productDetails(product) {
+        const money = (value) =>
+            value === null || value === undefined || value === "" ? "—" : this.formatCurrency(value, product.currency_id);
+        const number = (value) => (value === null || value === undefined || value === "" ? "—" : this.formatNumber(value));
+        const dateTime = (value) => this.formatDateTimeLong(value);
+        const listing = VALUE_LABELS.listingTypeId[product.listing_type_id] || product.listing_type_id || "—";
+        const condition = VALUE_LABELS.condition[product.condition] || product.condition || "—";
+        return [
+            {
+                title: "Publicación",
+                icon: "fa-tag",
+                rows: [
+                    { label: "MLA", value: product.item_id || "—", copy: product.item_id, mono: true },
+                    { label: "SKU", value: product.sku || "—", copy: product.sku, mono: true },
+                    { label: "Marca", value: product.brand || "—" },
+                    { label: "Categoría", value: product.category_id || "—", copy: product.category_id, mono: true },
+                    { label: "Dominio", value: product.domain_id || "—", mono: true },
+                    { label: "Tipo", value: listing },
+                    { label: "Condición", value: condition },
+                    { label: "Vendedor", value: product.seller_id || "—", mono: true },
+                ],
+            },
+            {
+                title: "Precio y stock",
+                icon: "fa-usd",
+                rows: [
+                    { label: "Precio", value: money(product.price), strong: true },
+                    { label: "Precio promedio vendido", value: money(product.avg_unit_price) },
+                    { label: "Moneda", value: product.currency_id || "—" },
+                    { label: "Stock", value: number(product.stock), danger: this.isOut(product) },
+                    { label: "Disponible", value: number(product.available_quantity), danger: this.isOut(product) },
+                    { label: "Ventas de catálogo", value: number(product.catalog_sold_quantity) },
+                ],
+            },
+            {
+                title: "Rendimiento",
+                icon: "fa-line-chart",
+                rows: [
+                    { label: "Facturación", value: money(product.revenue), strong: true },
+                    { label: "Órdenes", value: number(product.orders_count) },
+                    { label: "Unidades vendidas", value: number(product.units_sold) },
+                    { label: "Ticket promedio", value: money(product.avg_ticket) },
+                    { label: "Visitas", value: number(product.total_visits) },
+                    { label: "Conversión de órdenes", value: this.formatPercent(product.order_conversion_rate) },
+                    { label: "Conversión de unidades", value: this.formatPercent(product.unit_conversion_rate) },
+                ],
+            },
+            {
+                title: "Fechas",
+                icon: "fa-calendar",
+                rows: [
+                    { label: "Publicada", value: dateTime(product.date_created) },
+                    { label: "Última actualización", value: dateTime(product.last_updated) },
+                    { label: "Primera venta", value: dateTime(product.first_order_date) },
+                    { label: "Última venta", value: dateTime(product.last_order_date) },
+                    {
+                        label: "Días hasta la 1ª venta",
+                        value: product.days_to_first_order === null || product.days_to_first_order === undefined
+                            ? "Sin ventas"
+                            : `${this.formatNumber(product.days_to_first_order)} días`,
+                    },
+                    { label: "Visitas medidas", value: dateTime(product.visits_captured_at) },
+                    { label: "Sincronizado", value: dateTime(product.last_synced_at) },
+                ],
+            },
+        ];
+    }
+
+    formatDateTimeLong(value) {
+        if (!value) {
+            return "—";
+        }
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) {
+            return String(value);
+        }
+        return new Intl.DateTimeFormat("es-AR", {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+        }).format(date);
     }
 
     // ------------------------------------------------------------ eliminar

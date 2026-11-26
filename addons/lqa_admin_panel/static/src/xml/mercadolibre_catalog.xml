@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <templates xml:space="preserve">
     <t t-name="lqa_admin_panel.MercadolibreCatalog">
-        <div class="o_lqa_mcat">
+        <div t-att-class="'o_lqa_mcat' + (selectedCount ? ' has-selection' : '')">
             <div class="o_lqa_mcat__inner">
 
                 <!-- Encabezado -->
@@ -25,17 +25,34 @@
                             <span>Página</span>
                             <strong><t t-esc="currentPage"/> / <t t-esc="formatNumber(totalPages)"/></strong>
                         </div>
-                        <button
-                            type="button"
-                            class="o_lqa_mcat__btn is-excel"
-                            t-on-click="openExportModal"
-                            t-att-disabled="state.loading or exportIsActive or !state.pagination.total"
-                        >
-                            <i class="fa fa-file-excel-o"/>
-                            <span>Exportar a Excel</span>
-                        </button>
                     </div>
                 </header>
+
+                <div class="o_lqa_mcat__actions">
+                    <button
+                        type="button"
+                        class="o_lqa_mcat__btn is-ghost"
+                        t-att-disabled="state.loading or !state.pagination.total or isSelectionJobRunning"
+                        t-on-click="openSaveFiltered"
+                        t-att-title="filterExceedsFolderLimit ? 'El filtro supera ' + formatNumber(maxFolderProducts) + ' productos: acotalo para guardarlo entero.' : 'Guardar todos los productos del filtro en una carpeta'"
+                    >
+                        <i class="fa fa-folder-o"/>
+                        <span>Guardar filtro en carpeta</span>
+                    </button>
+                    <button type="button" class="o_lqa_mcat__btn is-ghost" t-on-click="openExportHistory">
+                        <i class="fa fa-history"/>
+                        <span>Mis exportaciones</span>
+                    </button>
+                    <button
+                        type="button"
+                        class="o_lqa_mcat__btn is-excel"
+                        t-on-click="openExportModal"
+                        t-att-disabled="state.loading or exportIsActive or !state.pagination.total"
+                    >
+                        <i class="fa fa-file-excel-o"/>
+                        <span>Exportar a Excel</span>
+                    </button>
+                </div>
 
                 <!-- Filtros -->
                 <form class="o_lqa_mcat__filters" t-on-submit.prevent="applyFilters">
@@ -44,7 +61,7 @@
                             <i class="fa fa-search"/>
                             <input
                                 type="search"
-                                placeholder="Buscar por título, SKU o MLA"
+                                placeholder="Buscar por título, SKU, MLA, marca o categoría"
                                 t-model="state.filters.search"
                             />
                         </label>
@@ -81,78 +98,127 @@
                     </div>
 
                     <div t-if="state.showAdvanced" class="o_lqa_mcat__advanced">
-                        <label>
-                            <span>Marcas</span>
-                            <input type="text" placeholder="Samsung, Sony" t-model="state.filters.brand"/>
-                        </label>
-                        <label>
-                            <span>Categoría</span>
-                            <input type="text" placeholder="MLA1002" t-model="state.filters.categoryId"/>
-                        </label>
-                        <label>
-                            <span>Dominio</span>
-                            <input type="text" placeholder="MLA-TELEVISIONS" t-model="state.filters.domainId"/>
-                        </label>
-                        <label>
-                            <span>Prefijo de SKU</span>
-                            <input type="text" placeholder="B0" t-model="state.filters.skuPrefix"/>
-                        </label>
-                        <label>
-                            <span>Condición</span>
-                            <select t-model="state.filters.condition">
-                                <option value="">Todas</option>
-                                <option value="new">Nuevo</option>
-                                <option value="used">Usado</option>
-                                <option value="refurbished">Reacondicionado</option>
-                            </select>
-                        </label>
-                        <label>
-                            <span>Tipo de publicación</span>
-                            <input type="text" placeholder="gold_special, gold_pro" t-model="state.filters.listingTypeId"/>
-                        </label>
-                        <label>
-                            <span>Con órdenes</span>
-                            <select t-model="state.filters.hasOrders">
-                                <option value="">Indistinto</option>
-                                <option value="true">Sí</option>
-                                <option value="false">No</option>
-                            </select>
-                        </label>
-                        <label>
-                            <span>Con visitas</span>
-                            <select t-model="state.filters.hasVisits">
-                                <option value="">Indistinto</option>
-                                <option value="true">Sí</option>
-                                <option value="false">No</option>
-                            </select>
-                        </label>
-                        <label>
-                            <span>Órdenes mínimas</span>
-                            <input type="number" min="0" placeholder="1" t-model="state.filters.minOrders"/>
-                        </label>
-                        <label>
-                            <span>Facturación mínima</span>
-                            <input type="number" min="0" placeholder="100000" t-model="state.filters.minRevenue"/>
-                        </label>
-                        <label>
-                            <span>Creado desde</span>
-                            <input type="date" t-model="state.filters.createdFrom"/>
-                        </label>
-                        <label>
-                            <span>Creado hasta</span>
-                            <input type="date" t-model="state.filters.createdTo"/>
-                        </label>
+                        <section>
+                            <h3>Publicación</h3>
+                            <div class="o_lqa_mcat__fields">
+                                <label>
+                                    <span>Marcas</span>
+                                    <input type="text" placeholder="Samsung, Sony" t-model="state.filters.brand"/>
+                                </label>
+                                <label>
+                                    <span>Categorías</span>
+                                    <input type="text" placeholder="MLA1002, MLA456045" t-model="state.filters.categoryId"/>
+                                </label>
+                                <label>
+                                    <span>Dominios</span>
+                                    <input type="text" placeholder="MLA-TELEVISIONS" t-model="state.filters.domainId"/>
+                                </label>
+                                <label>
+                                    <span>SKU exacto</span>
+                                    <input type="text" placeholder="B0BYZX8X9H" t-model="state.filters.sku"/>
+                                </label>
+                                <label>
+                                    <span>SKU empieza con</span>
+                                    <input type="text" placeholder="B0" t-model="state.filters.skuPrefix"/>
+                                </label>
+                                <label>
+                                    <span>Tipo de publicación</span>
+                                    <select t-model="state.filters.listingTypeId">
+                                        <option value="">Todas</option>
+                                        <option value="gold_special">Clásica</option>
+                                        <option value="gold_pro">Premium</option>
+                                    </select>
+                                </label>
+                                <label>
+                                    <span>Condición</span>
+                                    <select t-model="state.filters.condition">
+                                        <option value="">Todas</option>
+                                        <option value="new">Nuevo</option>
+                                        <option value="used">Usado</option>
+                                        <option value="refurbished">Reacondicionado</option>
+                                    </select>
+                                </label>
+                                <label>
+                                    <span>Moneda</span>
+                                    <select t-model="state.filters.currencyId">
+                                        <option value="">Todas</option>
+                                        <option value="ARS">Pesos (ARS)</option>
+                                        <option value="USD">Dólares (USD)</option>
+                                    </select>
+                                </label>
+                                <label>
+                                    <span>Con órdenes</span>
+                                    <select t-model="state.filters.hasOrders">
+                                        <option value="">Indistinto</option>
+                                        <option value="true">Sí</option>
+                                        <option value="false">No</option>
+                                    </select>
+                                </label>
+                                <label>
+                                    <span>Con visitas</span>
+                                    <select t-model="state.filters.hasVisits">
+                                        <option value="">Indistinto</option>
+                                        <option value="true">Sí</option>
+                                        <option value="false">No</option>
+                                    </select>
+                                </label>
+                            </div>
+                        </section>
+                        <section>
+                            <h3>Precio, stock y rendimiento <small>(mínimo y máximo, cualquiera de los dos)</small></h3>
+                            <div class="o_lqa_mcat__ranges">
+                                <t t-foreach="rangeFilters" t-as="range" t-key="range.id">
+                                    <div class="o_lqa_mcat__range-field">
+                                        <span t-esc="range.label"/>
+                                        <div>
+                                            <input type="number" min="0" step="any" placeholder="Mín." t-model="state.filters[range.min]"/>
+                                            <i>–</i>
+                                            <input type="number" min="0" step="any" placeholder="Máx." t-model="state.filters[range.max]"/>
+                                        </div>
+                                    </div>
+                                </t>
+                            </div>
+                        </section>
+                        <section>
+                            <h3>Fechas</h3>
+                            <div class="o_lqa_mcat__ranges is-dates">
+                                <t t-foreach="dateFilters" t-as="range" t-key="range.id">
+                                    <div class="o_lqa_mcat__range-field">
+                                        <span t-esc="range.label"/>
+                                        <div>
+                                            <input type="date" t-model="state.filters[range.min]"/>
+                                            <i>–</i>
+                                            <input type="date" t-model="state.filters[range.max]"/>
+                                        </div>
+                                    </div>
+                                </t>
+                            </div>
+                        </section>
+                        <footer>
+                            <button
+                                type="button"
+                                class="o_lqa_mcat__link"
+                                t-att-disabled="state.loading or !advancedActiveCount"
+                                t-on-click="clearAdvanced"
+                            >
+                                Limpiar estos filtros
+                            </button>
+                            <button type="submit" class="o_lqa_mcat__btn is-primary" t-att-disabled="state.loading">
+                                <i t-if="state.loading and !state.pageLoading" class="o_lqa_mcat__spinner"/>
+                                <span>Aplicar filtros</span>
+                            </button>
+                        </footer>
                     </div>
 
                     <div t-if="activeChips.length or filtersDirty" class="o_lqa_mcat__chips">
-                        <t t-foreach="activeChips" t-as="chip" t-key="chip.key">
+                        <t t-foreach="activeChips" t-as="chip" t-key="chip.id">
                             <span class="o_lqa_mcat__chip">
                                 <small t-esc="chip.label"/>
                                 <b t-esc="chip.value"/>
                                 <button
                                     type="button"
                                     t-att-disabled="state.loading"
-                                    t-on-click="() => this.removeChip(chip.key)"
+                                    t-on-click="() => this.removeChip(chip)"
                                     aria-label="Quitar filtro"
                                 >
                                     <i class="fa fa-times"/>
@@ -185,29 +251,35 @@
                     <div class="o_lqa_mcat__jobbody">
                         <div class="o_lqa_mcat__jobhead">
                             <strong>
-                                <t t-if="state.exportJob.state === 'queued'">Exportación en cola</t>
-                                <t t-elif="state.exportJob.state === 'running'">Exportando a Excel</t>
+                                <t t-if="exportIsActive">Exportando a Excel</t>
                                 <t t-elif="state.exportJob.state === 'done'">El Excel está listo</t>
                                 <t t-elif="state.exportJob.state === 'cancelled'">Exportación cancelada</t>
                                 <t t-else="">La exportación falló</t>
                             </strong>
-                            <span t-if="exportIsActive or state.exportJob.state === 'done'" class="o_lqa_mcat__jobpct" t-esc="state.exportJob.progress + '%'"/>
+                            <span t-if="exportIsActive" class="o_lqa_mcat__jobpct" t-esc="state.exportJob.progress + '%'"/>
                         </div>
+                        <p t-if="exportIsActive" class="o_lqa_mcat__jobstage" t-esc="exportStage"/>
                         <div t-if="exportIsActive" class="o_lqa_mcat__bar">
                             <span t-att-style="'width:' + Math.max(state.exportJob.progress, 2) + '%'"/>
                         </div>
                         <p class="o_lqa_mcat__jobmeta">
-                            <t t-esc="formatNumber(state.exportJob.processed)"/> de
-                            <t t-esc="formatNumber(state.exportJob.matched)"/> productos
-                            <t t-if="state.exportJob.partCount > 1"> · <t t-esc="state.exportJob.partCount"/> partes</t>
-                            <t t-if="exportSizeLabel"> · <t t-esc="exportSizeLabel"/></t>
                             <t t-if="exportIsActive and exportEta">
-                                · <t t-esc="formatNumber(exportEta.perMinute)"/> por minuto · faltan <t t-esc="exportEta.remaining"/>
+                                <t t-esc="formatNumber(exportEta.perMinute)"/> productos por minuto · faltan <t t-esc="exportEta.remaining"/> ·
                             </t>
-                            <t t-elif="exportIsActive and !state.exportJob.processed"> · preparando la primera página…</t>
+                            <t t-if="!exportIsActive"><t t-esc="formatNumber(state.exportJob.processed)"/> productos ·</t>
+                            <t t-esc="state.exportJob.columns.length"/> columnas
+                            <t t-if="state.exportJob.partCount > 1"> · <t t-esc="state.exportJob.partCount"/> archivos</t>
+                            <t t-if="exportSizeLabel"> · <t t-esc="exportSizeLabel"/></t>
+                            <t t-if="state.exportJob.state === 'done' and expiresLabel(state.exportJob)"> · <t t-esc="expiresLabel(state.exportJob)"/></t>
                         </p>
-                        <p t-if="state.exportJob.error" class="o_lqa_mcat__joberror" t-esc="state.exportJob.error"/>
-                        <p t-if="exportIsActive" class="o_lqa_mcat__jobhint">Sigue en el servidor aunque cierres esta pantalla.</p>
+                        <div t-if="exportJobChips.length" class="o_lqa_mcat__minichips">
+                            <t t-foreach="exportJobChips" t-as="chip" t-key="chip.id">
+                                <span><t t-esc="chip.label"/>: <b t-esc="chip.value"/></span>
+                            </t>
+                        </div>
+                        <span t-else="" class="o_lqa_mcat__minichips"><span>Todo el catálogo</span></span>
+                        <p t-if="state.exportJob.error and !exportIsActive" class="o_lqa_mcat__joberror" t-esc="state.exportJob.error"/>
+                        <p t-if="exportIsActive" class="o_lqa_mcat__jobhint">Corre en el servidor: podés cerrar esta pantalla y descargarlo después desde "Mis exportaciones".</p>
                     </div>
                     <div class="o_lqa_mcat__jobactions">
                         <a
@@ -234,6 +306,7 @@
                             class="o_lqa_mcat__iconbtn"
                             t-on-click="dismissExport"
                             aria-label="Cerrar"
+                            title="Cerrar"
                         >
                             <i class="fa fa-times"/>
                         </button>
@@ -444,6 +517,13 @@
                                 </dl>
                                 <footer class="o_lqa_mcat__cardfoot">
                                     <span><t t-esc="product.sku || 'Sin SKU'"/> · <t t-esc="formatDate(product.date_created)"/></span>
+                                    <button
+                                        type="button"
+                                        class="o_lqa_mcat__detailbtn"
+                                        t-on-click.stop="() => this.openDetailPanel(product)"
+                                    >
+                                        Detalles <i class="fa fa-angle-right"/>
+                                    </button>
                                     <a
                                         t-if="product.permalink"
                                         t-att-href="product.permalink"
@@ -465,6 +545,7 @@
                         <thead>
                             <tr>
                                 <th class="is-check"/>
+                                <th class="is-expand"/>
                                 <th>Publicación</th>
                                 <th>Estado</th>
                                 <th class="is-num">Precio</th>
@@ -481,11 +562,21 @@
                         <tbody>
                             <t t-foreach="state.products" t-as="product" t-key="productKey(product) + '_' + product_index">
                                 <tr
-                                    t-att-class="isSelected(productKey(product)) ? 'is-selected' : ''"
+                                    t-att-class="(isSelected(productKey(product)) ? 'is-selected' : '') + (isDetailOpen(product) ? ' is-open' : '')"
                                     t-on-click="() => this.toggleProduct(product)"
                                 >
                                     <td class="is-check">
                                         <input type="checkbox" t-att-checked="isSelected(productKey(product))" t-on-click.stop="() => this.toggleProduct(product)"/>
+                                    </td>
+                                    <td class="is-expand">
+                                        <button
+                                            type="button"
+                                            t-att-class="'o_lqa_mcat__expand' + (isDetailOpen(product) ? ' is-open' : '')"
+                                            t-on-click.stop="() => this.toggleDetail(product)"
+                                            t-att-title="isDetailOpen(product) ? 'Ocultar detalles' : 'Ver detalles'"
+                                        >
+                                            <i class="fa fa-chevron-right"/>
+                                        </button>
                                     </td>
                                     <td class="is-product">
                                         <div>
@@ -521,6 +612,11 @@
                                         </a>
                                     </td>
                                 </tr>
+                                <tr t-if="isDetailOpen(product)" class="o_lqa_mcat__detailrow">
+                                    <td colspan="13">
+                                        <t t-call="lqa_admin_panel.MercadolibreCatalogDetail"/>
+                                    </td>
+                                </tr>
                             </t>
                         </tbody>
                     </table>
@@ -552,42 +648,40 @@
                 </nav>
             </div>
 
-            <!-- Barra de seleccion fija -->
-            <div class="o_lqa_mcat__dock">
+            <!-- Barra de seleccion: solo aparece cuando hay productos elegidos -->
+            <div t-if="selectedCount" class="o_lqa_mcat__dock">
                 <div class="o_lqa_mcat__dockinner">
                     <div class="o_lqa_mcat__docksel">
-                        <t t-if="selectedCount">
-                            <strong><t t-esc="formatNumber(selectedCount)"/> seleccionados</strong>
-                            <button type="button" class="o_lqa_mcat__link" t-on-click="clearSelection">Quitar selección</button>
-                        </t>
-                        <t t-else="">
-                            <strong>Guardar en carpeta</strong>
-                            <span>Elegí productos o guardá todo el filtro.</span>
-                        </t>
+                        <b class="o_lqa_mcat__dockcount" t-esc="formatNumber(selectedCount)"/>
+                        <div>
+                            <strong>
+                                <t t-if="selectedCount === 1">producto seleccionado</t>
+                                <t t-else="">productos seleccionados</t>
+                            </strong>
+                            <button type="button" class="o_lqa_mcat__docklink" t-on-click="clearSelection">
+                                Quitar selección
+                            </button>
+                        </div>
                     </div>
 
                     <div class="o_lqa_mcat__dockfolder">
+                        <span class="o_lqa_mcat__docklabel"><i class="fa fa-folder-o"/> Carpeta</span>
                         <select
-                            class="o_lqa_mcat__select"
                             t-att-disabled="state.foldersLoading or !state.folders.length"
                             t-on-change="(ev) => this.selectFolder(ev.target.value)"
                         >
                             <option t-if="state.foldersLoading" value="">Cargando carpetas…</option>
                             <option t-elif="!state.folders.length" value="">Todavía no hay carpetas</option>
                             <t t-foreach="state.folders" t-as="folder" t-key="folder.id">
-                                <option
-                                    t-att-value="folder.id"
-                                    t-att-selected="isFolderSelected(folder)"
-                                >
+                                <option t-att-value="folder.id" t-att-selected="isFolderSelected(folder)">
                                     <t t-esc="folder.name"/> (<t t-esc="formatNumber(folder.productCount)"/>)
                                 </option>
                             </t>
                         </select>
                         <form class="o_lqa_mcat__newfolder" t-on-submit.prevent="createFolder">
-                            <input type="text" placeholder="Nueva carpeta" t-model="state.newFolderName" t-att-disabled="state.creatingFolder"/>
+                            <input type="text" placeholder="o crear una nueva…" t-model="state.newFolderName" t-att-disabled="state.creatingFolder"/>
                             <button
                                 type="submit"
-                                class="o_lqa_mcat__iconbtn"
                                 t-att-disabled="state.creatingFolder or !state.newFolderName.trim()"
                                 title="Crear carpeta"
                             >
@@ -595,45 +689,35 @@
                                 <i t-else="" class="fa fa-plus"/>
                             </button>
                         </form>
-                        <button
-                            t-if="selectedFolder"
-                            type="button"
-                            class="o_lqa_mcat__iconbtn"
-                            t-on-click="openSelections"
-                            title="Ver la carpeta en Selecciones"
-                        >
-                            <i class="fa fa-folder-open-o"/>
-                        </button>
                     </div>
 
                     <div class="o_lqa_mcat__dockactions">
                         <button
                             type="button"
-                            class="o_lqa_mcat__btn is-primary"
-                            t-att-disabled="!selectedCount or !state.selectedFolderId or state.savingSelection"
+                            class="o_lqa_mcat__dockbtn is-save"
+                            t-att-disabled="!state.selectedFolderId or state.savingSelection"
                             t-on-click="saveSelectionToFolder"
                         >
                             <i t-if="state.savingSelection" class="o_lqa_mcat__spinner"/>
                             <i t-else="" class="fa fa-bookmark"/>
                             <span>
                                 <t t-if="state.savingSelection">Guardando…</t>
-                                <t t-else="">Guardar selección</t>
+                                <t t-else="">Guardar en carpeta</t>
                             </span>
                         </button>
                         <button
+                            t-if="selectedFolder"
                             type="button"
-                            class="o_lqa_mcat__btn is-ghost"
-                            t-att-disabled="!state.selectedFolderId or !state.pagination.total or filterExceedsFolderLimit or isSelectionJobRunning or state.loading"
-                            t-att-title="filterExceedsFolderLimit ? 'El filtro supera ' + formatNumber(maxFolderProducts) + ' productos: acotalo para guardarlo entero.' : ''"
-                            t-on-click="openSaveFiltered"
+                            class="o_lqa_mcat__dockbtn is-icon"
+                            t-on-click="openSelections"
+                            title="Ver la carpeta en Selecciones"
                         >
-                            <i class="fa fa-filter"/>
-                            <span>Guardar todo el filtro</span>
+                            <i class="fa fa-external-link"/>
                         </button>
+                        <span class="o_lqa_mcat__docksep"/>
                         <button
                             type="button"
-                            class="o_lqa_mcat__btn is-danger"
-                            t-att-disabled="!selectedCount"
+                            class="o_lqa_mcat__dockbtn is-danger"
                             t-on-click="openDeleteConfirmation"
                         >
                             <i class="fa fa-trash-o"/>
@@ -648,10 +732,11 @@
                 <div class="o_lqa_mcat__backdrop" t-on-click="closeExportModal"/>
                 <section role="dialog" aria-modal="true" aria-labelledby="mcat-export-title" class="is-wide">
                     <header>
+                        <div class="o_lqa_mcat__excelicon"><i class="fa fa-file-excel-o"/></div>
                         <div>
                             <h2 id="mcat-export-title">Exportar a Excel</h2>
                             <p>
-                                Se exportan los <b t-esc="formatNumber(exportTotal)"/> productos del filtro aplicado.
+                                <b t-esc="formatNumber(exportTotal)"/> productos del filtro aplicado, en un .zip con los .xlsx.
                             </p>
                         </div>
                         <button type="button" class="o_lqa_mcat__iconbtn" t-on-click="closeExportModal" aria-label="Cerrar">
@@ -659,59 +744,91 @@
                         </button>
                     </header>
 
+                    <div class="o_lqa_mcat__exportfilter">
+                        <span>Filtro</span>
+                        <div t-if="activeChips.length" class="o_lqa_mcat__minichips">
+                            <t t-foreach="activeChips" t-as="chip" t-key="chip.id">
+                                <span><t t-esc="chip.label"/>: <b t-esc="chip.value"/></span>
+                            </t>
+                        </div>
+                        <div t-else="" class="o_lqa_mcat__minichips"><span>Todo el catálogo, sin filtros</span></div>
+                    </div>
+
                     <div t-if="exportBlocked" class="o_lqa_mcat__notice is-danger">
                         <i class="fa fa-ban"/>
                         <div>
-                            <strong>El filtro es demasiado grande</strong>
+                            <strong>El filtro es demasiado grande para exportar</strong>
                             <span>
-                                La exportación admite hasta <t t-esc="formatNumber(maxExportRows)"/> productos y este filtro devuelve
-                                <t t-esc="formatNumber(exportTotal)"/>. Acotalo por estado, marca, categoría o fechas.
+                                Se pueden exportar hasta <t t-esc="formatNumber(maxExportRows)"/> productos y este filtro tiene
+                                <t t-esc="formatNumber(exportTotal)"/>. Acotalo por estado, marca, categoría, fechas o rendimiento.
                             </span>
                         </div>
                     </div>
                     <t t-else="">
+                        <div class="o_lqa_mcat__exportblock">
+                            <div class="o_lqa_mcat__exporthead">
+                                <strong>Columnas <small><t t-esc="selectedExportColumns.length"/> de <t t-esc="exportCsvColumns.length"/></small></strong>
+                                <div class="o_lqa_mcat__segment is-sm" role="group">
+                                    <t t-foreach="exportPresetOptions" t-as="preset" t-key="preset.id">
+                                        <button
+                                            type="button"
+                                            t-att-class="exportPreset === preset.id ? 'is-on' : ''"
+                                            t-on-click="() => this.selectExportColumns(preset.id)"
+                                            t-esc="preset.label"
+                                        />
+                                    </t>
+                                </div>
+                            </div>
+                            <div class="o_lqa_mcat__colgroups">
+                                <t t-foreach="exportColumnGroups" t-as="group" t-key="group.group">
+                                    <div class="o_lqa_mcat__colgroup">
+                                        <label class="o_lqa_mcat__colgrouphead">
+                                            <input
+                                                type="checkbox"
+                                                t-att-checked="isGroupSelected(group.group)"
+                                                t-on-change="() => this.toggleExportGroup(group.group)"
+                                            />
+                                            <span t-esc="group.group"/>
+                                        </label>
+                                        <t t-foreach="group.columns" t-as="column" t-key="column.key">
+                                            <label t-att-class="'o_lqa_mcat__colopt' + (state.exportColumns[column.key] ? ' is-on' : '')">
+                                                <input
+                                                    type="checkbox"
+                                                    t-att-checked="state.exportColumns[column.key]"
+                                                    t-on-change="() => this.toggleExportColumn(column.key)"
+                                                />
+                                                <span t-esc="column.label"/>
+                                            </label>
+                                        </t>
+                                    </div>
+                                </t>
+                            </div>
+                        </div>
+
+                        <div class="o_lqa_mcat__exportblock is-row">
+                            <div>
+                                <strong>Archivos</strong>
+                                <small>~<t t-esc="formatNumber(exportRowsPerPart)"/> filas por archivo</small>
+                            </div>
+                            <div class="o_lqa_mcat__segment is-sm" role="group">
+                                <t t-foreach="exportPartOptions" t-as="count" t-key="count">
+                                    <button
+                                        type="button"
+                                        t-att-class="state.exportPartCount == count ? 'is-on' : ''"
+                                        t-on-click="() => this.setExportParts(count)"
+                                        t-esc="count"
+                                    />
+                                </t>
+                            </div>
+                        </div>
+
                         <div t-att-class="'o_lqa_mcat__notice' + (exportEstimateIsLong ? ' is-warning' : '')">
                             <i class="fa fa-clock-o"/>
                             <div>
-                                <strong>Tiempo estimado: <t t-esc="exportEstimateLabel"/></strong>
-                                <span>Corre en el servidor: podés cerrar esta pantalla y volver a descargarlo cuando termine.</span>
+                                <strong>Tarda <t t-esc="exportEstimateLabel"/> aproximadamente</strong>
+                                <span>Corre en el servidor: podés seguir usando el panel y descargarlo después desde "Mis exportaciones". Queda disponible 7 días.</span>
                             </div>
                         </div>
-
-                        <div class="o_lqa_mcat__colhead">
-                            <strong>Columnas <small>(<t t-esc="selectedExportColumns.length"/>)</small></strong>
-                            <div>
-                                <button type="button" class="o_lqa_mcat__link" t-on-click="() => this.selectExportColumns('basic')">Básicas</button>
-                                <button type="button" class="o_lqa_mcat__link" t-on-click="() => this.selectExportColumns('all')">Todas</button>
-                                <button type="button" class="o_lqa_mcat__link" t-on-click="() => this.selectExportColumns('none')">Ninguna</button>
-                            </div>
-                        </div>
-                        <div class="o_lqa_mcat__columns">
-                            <t t-foreach="exportCsvColumns" t-as="column" t-key="column.key">
-                                <label t-att-class="state.exportColumns[column.key] ? 'is-on' : ''">
-                                    <input
-                                        type="checkbox"
-                                        t-att-checked="state.exportColumns[column.key]"
-                                        t-on-change="() => this.toggleExportColumn(column.key)"
-                                    />
-                                    <span t-esc="column.label"/>
-                                </label>
-                            </t>
-                        </div>
-
-                        <label class="o_lqa_mcat__parts">
-                            <span>Dividir en archivos</span>
-                            <select t-model="state.exportPartCount">
-                                <option value="1">1 archivo</option>
-                                <option value="2">2 archivos</option>
-                                <option value="3">3 archivos</option>
-                                <option value="5">5 archivos</option>
-                                <option value="10">10 archivos</option>
-                            </select>
-                            <small>
-                                ~<t t-esc="formatNumber(exportRowsPerPart)"/> filas por archivo. Si no entran en una hoja de Excel se agregan partes solas.
-                            </small>
-                        </label>
                     </t>
 
                     <footer>
@@ -725,14 +842,89 @@
                             t-on-click="startExport"
                         >
                             <i t-if="state.startingExport" class="o_lqa_mcat__spinner"/>
-                            <i t-else="" class="fa fa-file-excel-o"/>
+                            <i t-else="" class="fa fa-download"/>
                             <span>
                                 <t t-if="state.startingExport">Iniciando…</t>
-                                <t t-else="">Exportar</t>
+                                <t t-else="">Exportar <t t-esc="formatNumber(exportTotal)"/> productos</t>
                             </span>
                         </button>
                     </footer>
                 </section>
+            </div>
+
+            <!-- Panel: mis exportaciones -->
+            <div t-if="state.showExportHistory" class="o_lqa_mcat__drawerwrap">
+                <div class="o_lqa_mcat__backdrop" t-on-click="closeExportHistory"/>
+                <aside class="o_lqa_mcat__drawer" role="dialog" aria-modal="true" aria-labelledby="mcat-history-title">
+                    <header>
+                        <div>
+                            <h2 id="mcat-history-title">Mis exportaciones</h2>
+                            <p>Las últimas 10. Cada Excel se puede bajar durante 7 días.</p>
+                        </div>
+                        <button
+                            type="button"
+                            class="o_lqa_mcat__iconbtn"
+                            t-att-disabled="state.exportHistoryLoading"
+                            t-on-click="loadExportHistory"
+                            title="Actualizar"
+                        >
+                            <i t-if="state.exportHistoryLoading" class="o_lqa_mcat__spinner"/>
+                            <i t-else="" class="fa fa-refresh"/>
+                        </button>
+                        <button type="button" class="o_lqa_mcat__iconbtn" t-on-click="closeExportHistory" aria-label="Cerrar">
+                            <i class="fa fa-times"/>
+                        </button>
+                    </header>
+                    <div class="o_lqa_mcat__drawerbody">
+                        <t t-if="state.exportHistoryLoading and !state.exportHistory.length">
+                            <t t-foreach="[1, 2, 3]" t-as="n" t-key="n">
+                                <div class="o_lqa_mcat__hist is-skeleton">
+                                    <i class="o_lqa_mcat__shimmer is-sm"/>
+                                    <i class="o_lqa_mcat__shimmer"/>
+                                </div>
+                            </t>
+                        </t>
+                        <div t-elif="!state.exportHistory.length" class="o_lqa_mcat__drawerempty">
+                            <i class="fa fa-file-excel-o"/>
+                            <strong>Todavía no exportaste nada</strong>
+                            <span>Usá "Exportar a Excel" con el filtro que necesites.</span>
+                        </div>
+                        <t t-else="">
+                            <t t-foreach="state.exportHistory" t-as="job" t-key="job.id">
+                                <article class="o_lqa_mcat__hist">
+                                    <div class="o_lqa_mcat__histhead">
+                                        <span t-att-class="'o_lqa_mcat__status ' + exportStateTone(job)" t-esc="exportStateLabel(job)"/>
+                                        <small t-esc="formatDateTime(job.startedAt)"/>
+                                    </div>
+                                    <strong>
+                                        <t t-esc="formatNumber(job.state === 'done' ? job.processed : job.matched)"/> productos ·
+                                        <t t-esc="job.columns.length"/> columnas
+                                        <t t-if="job.partCount > 1"> · <t t-esc="job.partCount"/> archivos</t>
+                                    </strong>
+                                    <div class="o_lqa_mcat__minichips">
+                                        <t t-if="chipsFor(job.filters).length">
+                                            <t t-foreach="chipsFor(job.filters)" t-as="chip" t-key="chip.id">
+                                                <span><t t-esc="chip.label"/>: <b t-esc="chip.value"/></span>
+                                            </t>
+                                        </t>
+                                        <span t-else="">Todo el catálogo</span>
+                                    </div>
+                                    <p t-if="job.state === 'failed' and job.error" class="o_lqa_mcat__joberror" t-esc="job.error"/>
+                                    <div t-if="['queued', 'running'].includes(job.state)" class="o_lqa_mcat__bar">
+                                        <span t-att-style="'width:' + Math.max(job.progress, 2) + '%'"/>
+                                    </div>
+                                    <footer t-if="job.ready">
+                                        <small t-esc="expiresLabel(job)"/>
+                                        <a class="o_lqa_mcat__btn is-excel is-sm" t-att-href="job.downloadUrl">
+                                            <i class="fa fa-download"/>
+                                            <span>Descargar</span>
+                                        </a>
+                                    </footer>
+                                </article>
+                            </t>
+                        </t>
+                    </div>
+                </aside>
             </div>
 
             <!-- Modal: guardar todo el filtro -->
@@ -740,18 +932,52 @@
                 <div class="o_lqa_mcat__backdrop" t-on-click="closeSaveFiltered"/>
                 <section role="dialog" aria-modal="true" aria-labelledby="mcat-savefilter-title">
                     <header>
+                        <div class="o_lqa_mcat__excelicon is-navy"><i class="fa fa-folder-o"/></div>
                         <div>
-                            <h2 id="mcat-savefilter-title">Guardar todo el filtro</h2>
-                            <p>
-                                Se van a guardar <b t-esc="formatNumber(state.pagination.total)"/> productos en
-                                <b t-esc="selectedFolderName"/>.
-                            </p>
+                            <h2 id="mcat-savefilter-title">Guardar el filtro en una carpeta</h2>
+                            <p>Se guardan los <b t-esc="formatNumber(state.pagination.total)"/> productos del filtro aplicado.</p>
                         </div>
                     </header>
+                    <div class="o_lqa_mcat__exportfilter">
+                        <span>Filtro</span>
+                        <div t-if="activeChips.length" class="o_lqa_mcat__minichips">
+                            <t t-foreach="activeChips" t-as="chip" t-key="chip.id">
+                                <span><t t-esc="chip.label"/>: <b t-esc="chip.value"/></span>
+                            </t>
+                        </div>
+                        <div t-else="" class="o_lqa_mcat__minichips"><span>Todo el catálogo, sin filtros</span></div>
+                    </div>
+                    <label class="o_lqa_mcat__field">
+                        <span>Carpeta</span>
+                        <select
+                            t-att-disabled="state.foldersLoading or !state.folders.length or state.savingFilteredSelection"
+                            t-on-change="(ev) => this.selectFolder(ev.target.value)"
+                        >
+                            <option t-if="state.foldersLoading" value="">Cargando carpetas…</option>
+                            <option t-elif="!state.folders.length" value="">Todavía no hay carpetas: creá una abajo</option>
+                            <t t-foreach="state.folders" t-as="folder" t-key="folder.id">
+                                <option t-att-value="folder.id" t-att-selected="isFolderSelected(folder)">
+                                    <t t-esc="folder.name"/> (<t t-esc="formatNumber(folder.productCount)"/>)
+                                </option>
+                            </t>
+                        </select>
+                    </label>
+                    <form class="o_lqa_mcat__inlinefolder" t-on-submit.prevent="createFolder">
+                        <input type="text" placeholder="Nueva carpeta" t-model="state.newFolderName" t-att-disabled="state.creatingFolder"/>
+                        <button
+                            type="submit"
+                            class="o_lqa_mcat__btn is-ghost"
+                            t-att-disabled="state.creatingFolder or !state.newFolderName.trim()"
+                        >
+                            <i t-if="state.creatingFolder" class="o_lqa_mcat__spinner"/>
+                            <i t-else="" class="fa fa-plus"/>
+                            <span>Crear</span>
+                        </button>
+                    </form>
                     <div class="o_lqa_mcat__notice">
                         <i class="fa fa-info-circle"/>
                         <div>
-                            <span>Los que ya estén en la carpeta se actualizan. El proceso sigue en segundo plano y podés seguir usando el panel.</span>
+                            <span>Los que ya estén en la carpeta se actualizan. Sigue en segundo plano y podés seguir usando el panel.</span>
                         </div>
                     </div>
                     <footer>
@@ -761,17 +987,41 @@
                         <button
                             type="button"
                             class="o_lqa_mcat__btn is-primary"
-                            t-att-disabled="state.savingFilteredSelection"
+                            t-att-disabled="state.savingFilteredSelection or !state.selectedFolderId"
                             t-on-click="saveFilteredSelectionToFolder"
                         >
                             <i t-if="state.savingFilteredSelection" class="o_lqa_mcat__spinner"/>
                             <span>
                                 <t t-if="state.savingFilteredSelection">Iniciando…</t>
-                                <t t-else="">Guardar</t>
+                                <t t-else="">Guardar en "<t t-esc="selectedFolderName"/>"</t>
                             </span>
                         </button>
                     </footer>
                 </section>
+            </div>
+
+            <!-- Panel: detalle de un producto (vista de tarjetas) -->
+            <div t-if="state.detailProduct" class="o_lqa_mcat__drawerwrap">
+                <div class="o_lqa_mcat__backdrop" t-on-click="closeDetailPanel"/>
+                <aside class="o_lqa_mcat__drawer is-detail" role="dialog" aria-modal="true" aria-labelledby="mcat-detail-title">
+                    <t t-set="product" t-value="state.detailProduct"/>
+                    <header>
+                        <div class="o_lqa_mcat__detailhead">
+                            <img t-if="product.thumbnail" t-att-src="product.thumbnail" alt=""/>
+                            <div>
+                                <span t-att-class="'o_lqa_mcat__status ' + statusTone(product.status)" t-esc="statusLabel(product.status)"/>
+                                <h2 id="mcat-detail-title" t-esc="product.title"/>
+                                <p><t t-esc="product.brand || 'Sin marca'"/> · <t t-esc="formatCurrency(product.price, product.currency_id)"/></p>
+                            </div>
+                        </div>
+                        <button type="button" class="o_lqa_mcat__iconbtn" t-on-click="closeDetailPanel" aria-label="Cerrar">
+                            <i class="fa fa-times"/>
+                        </button>
+                    </header>
+                    <div class="o_lqa_mcat__drawerbody">
+                        <t t-call="lqa_admin_panel.MercadolibreCatalogDetail"/>
+                    </div>
+                </aside>
             </div>
 
             <!-- Modal: eliminar -->
@@ -811,6 +1061,65 @@
                         </button>
                     </footer>
                 </section>
+            </div>
+        </div>
+    </t>
+
+    <!-- Detalle de una publicacion: se usa en la fila desplegada y en el panel. -->
+    <t t-name="lqa_admin_panel.MercadolibreCatalogDetail">
+        <div class="o_lqa_mcat__detail">
+            <div class="o_lqa_mcat__detailactions">
+                <a
+                    t-if="product.permalink"
+                    class="o_lqa_mcat__btn is-ghost is-sm"
+                    t-att-href="product.permalink"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                >
+                    <i class="fa fa-external-link"/>
+                    <span>Abrir en MercadoLibre</span>
+                </a>
+                <button type="button" class="o_lqa_mcat__btn is-ghost is-sm" t-on-click="() => this.copyText(product.item_id, 'MLA')">
+                    <i class="fa fa-copy"/>
+                    <span>Copiar MLA</span>
+                </button>
+                <button
+                    type="button"
+                    t-att-class="'o_lqa_mcat__btn is-sm ' + (isSelected(productKey(product)) ? 'is-primary' : 'is-ghost')"
+                    t-on-click="() => this.toggleProduct(product)"
+                >
+                    <i t-att-class="isSelected(productKey(product)) ? 'fa fa-check-square' : 'fa fa-square-o'"/>
+                    <span>
+                        <t t-if="isSelected(productKey(product))">Seleccionado</t>
+                        <t t-else="">Seleccionar</t>
+                    </span>
+                </button>
+            </div>
+            <div class="o_lqa_mcat__detailgrid">
+                <t t-foreach="productDetails(product)" t-as="section" t-key="section.title">
+                    <section class="o_lqa_mcat__detailsec">
+                        <h4><i t-att-class="'fa ' + section.icon"/> <t t-esc="section.title"/></h4>
+                        <dl>
+                            <t t-foreach="section.rows" t-as="row" t-key="row.label">
+                                <div>
+                                    <dt t-esc="row.label"/>
+                                    <dd t-att-class="(row.mono ? 'is-mono' : '') + (row.strong ? ' is-strong' : '') + (row.danger ? ' is-danger' : '')">
+                                        <span t-esc="row.value"/>
+                                        <button
+                                            t-if="row.copy"
+                                            type="button"
+                                            class="o_lqa_mcat__copy"
+                                            t-on-click="() => this.copyText(row.copy, row.label)"
+                                            t-att-title="'Copiar ' + row.label"
+                                        >
+                                            <i class="fa fa-copy"/>
+                                        </button>
+                                    </dd>
+                                </div>
+                            </t>
+                        </dl>
+                    </section>
+                </t>
             </div>
         </div>
     </t>

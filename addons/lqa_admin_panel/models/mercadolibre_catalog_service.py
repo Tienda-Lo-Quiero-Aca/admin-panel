@@ -51,10 +51,34 @@ class LqaMercadolibreCatalogService(models.AbstractModel):
         "skuPrefix",
         "hasOrders",
         "hasVisits",
+        "sku",
+        "currencyId",
         "minOrders",
+        "maxOrders",
         "minRevenue",
+        "maxRevenue",
+        "minPrice",
+        "maxPrice",
+        "minAvailableQuantity",
+        "maxAvailableQuantity",
+        "minUnitsSold",
+        "maxUnitsSold",
+        "minVisits",
+        "maxVisits",
+        "minAvgTicket",
+        "maxAvgTicket",
+        "minOrderConversionRate",
+        "maxOrderConversionRate",
+        "minCatalogSoldQuantity",
+        "maxCatalogSoldQuantity",
+        "minDaysToFirstOrder",
+        "maxDaysToFirstOrder",
         "createdFrom",
         "createdTo",
+        "firstOrderFrom",
+        "firstOrderTo",
+        "lastOrderFrom",
+        "lastOrderTo",
         "sortBy",
         "sortOrder",
         "limit",
@@ -136,6 +160,12 @@ class LqaMercadolibreCatalogService(models.AbstractModel):
     # grande corre horas y termina fallando por timeout. Mejor decirlo antes.
     EXPORT_MAX_ROWS = 500000
     EXPORT_RETENTION_DAYS = 7
+    # Paginas que se piden a la vez: cada consulta tarda lo mismo, asi que
+    # pedir 4 juntas cuadruplica la velocidad sin cargar mas el panel.
+    EXPORT_FETCH_CONCURRENCY = 4
+    # Despues de esto una exportacion terminada deja de mostrarse como tarjeta
+    # (sigue en el historial).
+    EXPORT_CARD_HOURS = 12
     MLA_FILE_BATCH_DEADLINE = 90
     JOB_HEARTBEAT_STALE_MINUTES = 5
 
@@ -1359,11 +1389,17 @@ class LqaMercadolibreCatalogService(models.AbstractModel):
     @api.model
     def get_active_catalog_export(self):
         self._check_access()
+        recent = fields.Datetime.now() - timedelta(hours=self.EXPORT_CARD_HOURS)
         export = (
             self.env["lqa.mercadolibre.catalog.export"]
             .sudo()
             .search(
-                [("requested_by_id", "=", self.env.user.id)],
+                [
+                    ("requested_by_id", "=", self.env.user.id),
+                    "|",
+                    ("state", "in", ["queued", "running"]),
+                    ("finished_at", ">=", recent),
+                ],
                 order="id desc",
                 limit=1,
             )
@@ -1372,6 +1408,22 @@ class LqaMercadolibreCatalogService(models.AbstractModel):
             return False
         self._resume_stale_catalog_export(export)
         return self._catalog_export_to_dict(export)
+
+    @api.model
+    def get_recent_catalog_exports(self, limit=10):
+        """Las ultimas exportaciones del usuario, para volver a descargarlas."""
+        self._check_access()
+        limit = min(max(self._as_int(limit, 10), 1), 30)
+        exports = (
+            self.env["lqa.mercadolibre.catalog.export"]
+            .sudo()
+            .search(
+                [("requested_by_id", "=", self.env.user.id)],
+                order="id desc",
+                limit=limit,
+            )
+        )
+        return [self._catalog_export_to_dict(export) for export in exports]
 
     @api.model
     def cancel_catalog_export(self, export_id):
@@ -1428,6 +1480,21 @@ class LqaMercadolibreCatalogService(models.AbstractModel):
             "canCancel": export.state in ("queued", "running"),
             # Para calcular velocidad y tiempo restante en la pantalla.
             "startedAt": fields.Datetime.to_string(export.create_date) or "",
+            "finishedAt": fields.Datetime.to_string(export.finished_at) or "",
+            "expiresAt": (
+                fields.Datetime.to_string(
+                    export.finished_at + timedelta(days=self.EXPORT_RETENTION_DAYS)
+                )
+                if export.state == "done" and export.finished_at
+                else ""
+            ),
+            "expired": bool(export.state == "done" and not export.export_path),
+            "filters": {
+                key: value
+                for key, value in self._json_loads(export.filters_json, {}).items()
+                if key not in {"limit", "offset", "sortBy", "sortOrder"}
+                and value not in (None, "")
+            },
             "maxRows": self.EXPORT_MAX_ROWS,
         }
 
@@ -1638,20 +1705,32 @@ class LqaMercadolibreCatalogService(models.AbstractModel):
             if token and not self._catalog_export_still_mine(export, token):
                 return {"stopped": True}
 
-            page_filters = dict(filters)
-            page_filters["offset"] = cursor
-            page_filters["limit"] = self.EXPORT_PAGE_SIZE
-            params = self._prepare_params(
-                page_filters, max_limit=self.EXPORT_PAGE_SIZE
-            )
-            response = self._request_selection_page_http(
-                endpoint,
-                params,
-                self.FILTER_SELECTION_API_TIMEOUT,
-                self.FILTER_SELECTION_PAGE_RETRIES,
-            )
-            products = response.get("products") or []
-            pagination = response.get("pagination") or {}
+            # La primera pagina va sola (todavia no se sabe el total); despues
+            # se piden varias a la vez y se escriben en orden.
+            page_offsets = [cursor]
+            if matched:
+                remaining_pages = -(-max(matched - cursor, 0) // self.EXPORT_PAGE_SIZE)
+                page_offsets = [
+                    cursor + index * self.EXPORT_PAGE_SIZE
+                    for index in range(
+                        max(min(self.EXPORT_FETCH_CONCURRENCY, remaining_pages), 1)
+                    )
+                ]
+            params_list = [
+                self._prepare_params(
+                    dict(filters, offset=page_offset, limit=self.EXPORT_PAGE_SIZE),
+                    max_limit=self.EXPORT_PAGE_SIZE,
+                )
+                for page_offset in page_offsets
+            ]
+            responses = self._request_selection_pages(endpoint, params_list)
+            products = [
+                product
+                for page in responses
+                for product in (page.get("products") or [])
+            ]
+            # has_next sale de la ultima pagina pedida.
+            pagination = responses[-1].get("pagination") or {}
 
             if not matched:
                 matched = self._as_int(pagination.get("total"), 0)
