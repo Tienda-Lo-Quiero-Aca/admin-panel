@@ -578,21 +578,19 @@ class LqaMercadolibrePricingService(models.AbstractModel):
         return price if price > 0 else None
 
     def _spawn_job_worker(self, job):
-        """Procesa el job apenas se guarda, sin esperar al cron del minuto."""
-        thread = threading.Thread(
-            target=self._run_job,
-            args=(self.env.cr.dbname, job.id),
-            name=f"lqa-meli-pricing-{job.id}",
-            daemon=True,
-        )
-        self.env.cr.postcommit.add(thread.start)
+        """Pide al cron de pricing que corra ya, sin esperar al minuto.
 
-    @staticmethod
-    def _run_job(dbname, job_id):
-        with Registry(dbname).cursor() as cr:
-            env = api.Environment(cr, SUPERUSER_ID, {})
-            env["lqa.mercadolibre.pricing.service"].process_job(job_id)
-            cr.commit()
+        Antes esto lanzaba un hilo dentro del worker HTTP que atendio el pedido;
+        Odoo recicla esos workers (por memoria o cantidad de pedidos) y el hilo
+        moria a mitad de camino, dejando el job "Procesando" para siempre. El
+        cron corre en su propio proceso, pensado para trabajos largos.
+        """
+        cron = self.env.ref(
+            "lqa_admin_panel.ir_cron_lqa_mercadolibre_pricing_jobs",
+            raise_if_not_found=False,
+        )
+        if cron:
+            cron.sudo()._trigger()
 
     @api.model
     def start_selection_folder_import(self, folder_id):
