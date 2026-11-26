@@ -52,7 +52,7 @@
                             <t t-foreach="statusOptions" t-as="option" t-key="option.id">
                                 <button
                                     type="button"
-                                    t-att-class="state.appliedFilters.status === option.id ? 'is-on' : ''"
+                                    t-att-class="state.filters.status === option.id ? 'is-on' : ''"
                                     t-att-disabled="state.loading"
                                     t-on-click="() => this.setStatus(option.id)"
                                     t-esc="option.label"

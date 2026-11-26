@@ -244,6 +244,10 @@ export class LqaMercadolibreCatalog extends Component {
     }
 
     get filtersDirty() {
+        // Mientras busca, lo escrito ya esta en camino: no es "sin aplicar".
+        if (this.state.loading) {
+            return false;
+        }
         return Object.keys(FILTER_LABELS).some(
             (key) => String(this.state.filters[key] ?? "") !== String(this.state.appliedFilters[key] ?? "")
         );
