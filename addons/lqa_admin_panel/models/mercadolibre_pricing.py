@@ -4,14 +4,19 @@ from datetime import timedelta
 import io
 import json
 import os
+import re
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
+import requests
 import xlsxwriter
 
 from odoo import _, api, fields, models, SUPERUSER_ID
 from odoo.exceptions import AccessError, UserError
 from odoo.modules.registry import Registry
+
+from .http_errors import http_timeout
 
 
 class LqaMercadolibrePricingJob(models.Model):
@@ -39,7 +44,12 @@ class LqaMercadolibrePricingJob(models.Model):
         index=True,
     )
     source_type = fields.Selection(
-        selection=[("csv", "CSV"), ("manual", "Manual"), ("folder", "Carpeta")],
+        selection=[
+            ("csv", "CSV"),
+            ("manual", "Manual"),
+            ("mla", "MLAs"),
+            ("folder", "Carpeta"),
+        ],
         default="csv",
         required=True,
         readonly=True,
@@ -70,6 +80,16 @@ class LqaMercadolibrePricingJob(models.Model):
         self.env[
             "lqa.mercadolibre.pricing.service"
         ].sudo().process_pending_folder_imports()
+        # Un job que quedo "Procesando" sin avanzar (se reinicio el worker) vuelve
+        # a la cola: sus filas ya resueltas se conservan.
+        stale = self.search(
+            [
+                ("state", "=", "processing"),
+                ("write_date", "<", fields.Datetime.now() - timedelta(minutes=15)),
+            ]
+        )
+        if stale:
+            stale.write({"state": "pending"})
         jobs = self.search(
             [("state", "=", "pending")],
             order="create_date asc, id asc",
@@ -172,6 +192,14 @@ class LqaMercadolibrePricingItem(models.Model):
     input_payload_json = fields.Text(readonly=True)
     response_json = fields.Text(readonly=True)
     error_message = fields.Text(readonly=True)
+    # Resultado guardado en columnas para filtrar, ordenar y resumir sin
+    # abrir el JSON de cada fila.
+    total_costs = fields.Float(readonly=True)
+    operating_profit = fields.Float(readonly=True)
+    margin_percent = fields.Float(readonly=True)
+    suggested_price = fields.Float(readonly=True)
+    seller_net_price = fields.Float(readonly=True)
+    no_cost = fields.Boolean(readonly=True, index=True)
 
     def to_panel_dict(self):
         self.ensure_one()
@@ -198,7 +226,55 @@ class LqaMercadolibrePricingItem(models.Model):
             "operatingProfitPercent": resultados.get("operatingProfitPercent"),
             "suggestedPrice": precio.get("suggestedPrice"),
             "discount": precio.get("discount"),
+            "marginValue": self.margin_percent if self.state == "done" else None,
+            # La API responde todo en cero cuando no tiene el costo del SKU:
+            # no es "Listo", es "sin costo".
+            "noCost": bool(self.no_cost),
+            "breakdown": self._breakdown(response) if self.state == "done" else None,
             "errorMessage": self.error_message or "",
+        }
+
+    def _breakdown(self, response):
+        """Composicion del precio, en el orden en que se lee."""
+        prices = response.get("prices") or {}
+        base = response.get("datosBase") or {}
+        costs = response.get("costosOperativos") or {}
+        computed = response.get("costosCalculados") or {}
+        rates = response.get("tiposDeCambio") or {}
+        results = response.get("resultados") or {}
+        precio = response.get("precio") or {}
+        rows = [
+            ("Precio de venta", prices.get("salePrice"), "money"),
+            ("Aporte de MercadoLibre", prices.get("meliContributionAmount"), "money"),
+            ("Neto para el vendedor", prices.get("sellerNetPrice"), "money"),
+            ("Comisión MercadoLibre", computed.get("comisionMpAmount"), "cost"),
+            ("Impuestos MercadoLibre", computed.get("impuestosMeliAmount"), "cost"),
+            ("Envío", costs.get("envioMlAmount"), "cost"),
+            ("Precio Amazon", costs.get("precioAmzAmount"), "cost"),
+            ("Depósito USA", costs.get("depositoUsaAmount"), "cost"),
+            ("Costos AMCO", costs.get("costosAmcoAmount"), "cost"),
+            ("Impuestos AMCO", costs.get("imptosAmcoAmount"), "cost"),
+            ("Costos totales", results.get("totalCosts"), "total"),
+            ("Ganancia operativa", results.get("operatingProfit"), "profit"),
+        ]
+        return {
+            "rows": [
+                {"label": label, "value": value, "kind": kind}
+                for label, value, kind in rows
+                if value not in (None, "")
+            ],
+            "facts": [
+                {"label": label, "value": value}
+                for label, value in (
+                    ("Comisión", f"{costs.get('commissionMpPercentage')}%" if costs.get("commissionMpPercentage") is not None else None),
+                    ("Peso", f"{base.get('weightKg')} kg" if base.get("weightKg") is not None else None),
+                    ("Peso volumétrico", f"{base.get('volumetricWeightKg')} kg" if base.get("volumetricWeightKg") is not None else None),
+                    ("Dólar AMCO", rates.get("tcAmco")),
+                    ("Dólar TLQ", rates.get("tcTlq")),
+                    ("Descuento posible", precio.get("discount")),
+                )
+                if value not in (None, "")
+            ],
         }
 
     @staticmethod
@@ -221,6 +297,19 @@ class LqaMercadolibrePricingService(models.AbstractModel):
     REQUIRED_FIELDS = ("mla", "categoryId", "publicationType", "sku", "salePrice")
     MAX_ITEMS = 5000
     REQUEST_CHUNK_SIZE = 50
+    # Carga por MLAs: el resto de los datos (SKU, tipo, precio, categoria) se
+    # buscan en Catalog Sync, una consulta por MLA (~0,7 s) en paralelo.
+    MAX_MLA_ITEMS = 2000
+    LOOKUP_CONCURRENCY = 8
+    LOOKUP_STACK_BYTES = 1024 * 1024
+    LOOKUP_TIMEOUT = 20
+    MLA_PATTERN = re.compile(r"MLA[-_ ]?(\d{6,})", re.IGNORECASE)
+    BARE_ID_PATTERN = re.compile(r"^(\d{8,})\b(.*)$")
+    # El precio tiene que ser lo unico que sigue al MLA (separado por espacio,
+    # tab, coma, punto y coma o barra): asi los numeros de un link pegado no se
+    # toman como precio.
+    PRICE_PATTERN = re.compile(r"^[\s,;|]+\$?\s*(\d[\d.,]*)\s*$")
+    RESULT_FILTERS = ("all", "profit", "loss", "nocost", "failed", "pending")
     CSV_OUTPUT_COLUMNS = (
         ("mla", "input.mla"),
         ("sku", "input.sku"),
@@ -361,7 +450,149 @@ class LqaMercadolibrePricingService(models.AbstractModel):
                 ],
             }
         )
+        self._spawn_job_worker(job)
         return self._job_to_dict(job)
+
+    @api.model
+    def preview_mla_input(self, text):
+        """Lo que se va a procesar, sin crear nada: para mostrar antes."""
+        self._check_access()
+        entries, ignored = self._parse_mla_text(text)
+        return {
+            "count": len(entries),
+            "withPrice": sum(1 for price in entries.values() if price),
+            "ignored": ignored[:20],
+            "ignoredCount": len(ignored),
+            "max": self.MAX_MLA_ITEMS,
+        }
+
+    @api.model
+    def create_mla_job(self, text, contribution=None, name=""):
+        """Pricing para MLAs cargados a mano.
+
+        Alcanza con el MLA; opcionalmente, en la misma linea, un precio de venta
+        para simular. SKU, tipo, categoria y precio actual salen de Catalog
+        Sync cuando el job se procesa.
+        """
+        self._check_access()
+        entries, ignored = self._parse_mla_text(text)
+        if not entries:
+            raise UserError(_("No encontré ningún MLA. Pegá uno por línea, por ejemplo MLA2228742950."))
+        if len(entries) > self.MAX_MLA_ITEMS:
+            raise UserError(
+                _("Podés cargar hasta %(max)s MLAs por vez y pegaste %(count)s.")
+                % {"max": self.MAX_MLA_ITEMS, "count": len(entries)}
+            )
+        contribution = self._as_float(contribution, None)
+        if contribution is not None and not 0 <= contribution <= 100:
+            raise UserError(_("El aporte de MercadoLibre tiene que estar entre 0 y 100."))
+
+        lines = []
+        for index, (mla, price) in enumerate(entries.items(), start=1):
+            payload = {"mla": mla, "needsLookup": True}
+            if price:
+                payload["salePrice"] = price
+            if contribution is not None:
+                payload["meliContributionPercentage"] = contribution
+            lines.append(
+                fields.Command.create(
+                    {
+                        "sequence": index,
+                        "mla": mla,
+                        "sale_price": price or 0,
+                        "has_meli_contribution": contribution is not None,
+                        "meli_contribution_percentage": contribution or 0,
+                        "input_payload_json": json.dumps(payload, ensure_ascii=False),
+                    }
+                )
+            )
+        label = self._clean(name) or _("%s MLAs") % len(entries)
+        job = self.env["lqa.mercadolibre.pricing.job"].sudo().create(
+            {
+                "name": label,
+                "user_id": self.env.user.id,
+                "source_type": "mla",
+                "input_count": len(entries),
+                "line_ids": lines,
+            }
+        )
+        self._spawn_job_worker(job)
+        data = self._job_to_dict(job)
+        data["ignored"] = ignored[:20]
+        data["ignoredCount"] = len(ignored)
+        return data
+
+    def _parse_mla_text(self, text):
+        """MLA por linea, con un precio opcional al lado.
+
+        Acepta MLA123, MLA-123, el numero solo o un link de la publicacion, y
+        varios MLA en una misma linea separados por coma o espacio.
+        """
+        entries = {}
+        ignored = []
+        for raw in str(text or "").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            matches = list(self.MLA_PATTERN.finditer(line))
+            if len(matches) > 1:
+                for match in matches:
+                    entries.setdefault(f"MLA{match.group(1)}", None)
+                continue
+            if matches:
+                match = matches[0]
+                mla = f"MLA{match.group(1)}"
+                rest = line[match.end():]
+            else:
+                bare = self.BARE_ID_PATTERN.match(line)
+                if not bare:
+                    ignored.append(line[:80])
+                    continue
+                mla = f"MLA{bare.group(1)}"
+                rest = bare.group(2)
+            number = self.PRICE_PATTERN.match(rest)
+            price = self._parse_price(number.group(1)) if number else None
+            if price or mla not in entries:
+                entries[mla] = price
+        return entries, ignored
+
+    @staticmethod
+    def _parse_price(value):
+        """731399 · 731.399 · 731.399,50 · 731399.50 -> float."""
+        value = str(value or "").strip().rstrip(".,")
+        if not value:
+            return None
+        if "." in value and "," in value:
+            value = value.replace(".", "").replace(",", ".")
+        elif "," in value:
+            head, _sep, tail = value.rpartition(",")
+            value = f"{head.replace(',', '')}.{tail}" if len(tail) <= 2 else value.replace(",", "")
+        elif value.count(".") > 1 or (
+            "." in value and len(value.rpartition(".")[2]) == 3
+        ):
+            value = value.replace(".", "")
+        try:
+            price = float(value)
+        except ValueError:
+            return None
+        return price if price > 0 else None
+
+    def _spawn_job_worker(self, job):
+        """Procesa el job apenas se guarda, sin esperar al cron del minuto."""
+        thread = threading.Thread(
+            target=self._run_job,
+            args=(self.env.cr.dbname, job.id),
+            name=f"lqa-meli-pricing-{job.id}",
+            daemon=True,
+        )
+        self.env.cr.postcommit.add(thread.start)
+
+    @staticmethod
+    def _run_job(dbname, job_id):
+        with Registry(dbname).cursor() as cr:
+            env = api.Environment(cr, SUPERUSER_ID, {})
+            env["lqa.mercadolibre.pricing.service"].process_job(job_id)
+            cr.commit()
 
     @api.model
     def start_selection_folder_import(self, folder_id):
@@ -875,22 +1106,30 @@ class LqaMercadolibrePricingService(models.AbstractModel):
         return [self._job_to_dict(job) for job in jobs]
 
     @api.model
-    def get_job(self, job_id, limit=200, offset=0):
+    def get_job(self, job_id, limit=200, offset=0, result_filter="all", search="", sort=""):
         self._check_access()
         job = self._get_job(job_id)
         limit = min(max(self._as_int(limit, 200), 25), 500)
         offset = max(self._as_int(offset, 0), 0)
-        line_model = self.env["lqa.mercadolibre.pricing.item"]
-        domain = [("job_id", "=", job.id)]
+        if job.state in {"done", "failed"}:
+            self._backfill_results(job)
+        line_model = self.env["lqa.mercadolibre.pricing.item"].sudo()
+        base = [("job_id", "=", job.id)]
+        domain = base + self._result_filter_domain(result_filter)
+        search = self._clean(search)
+        if search:
+            domain += ["|", ("mla", "ilike", search), ("sku", "ilike", search)]
+        order = {
+            "margin_asc": "state desc, margin_percent asc, id asc",
+            "margin_desc": "margin_percent desc, id asc",
+            "profit_desc": "operating_profit desc, id asc",
+            "profit_asc": "operating_profit asc, id asc",
+        }.get(sort, "sequence asc, id asc")
         total = line_model.search_count(domain)
-        lines = line_model.search(
-            domain,
-            order="sequence asc, id asc",
-            limit=limit,
-            offset=offset,
-        )
+        lines = line_model.search(domain, order=order, limit=limit, offset=offset)
         data = self._job_to_dict(job)
         data["lines"] = [line.to_panel_dict() for line in lines]
+        data["summary"] = self._job_summary(line_model, base)
         data["linePagination"] = {
             "offset": offset,
             "limit": limit,
@@ -905,10 +1144,15 @@ class LqaMercadolibrePricingService(models.AbstractModel):
     @api.model
     def retry_job(self, job_id):
         self._check_access()
-        job = self._get_job(job_id)
-        if job.state != "failed":
-            raise UserError(_("Solo se pueden reintentar jobs con error."))
-        job.line_ids.write(
+        job = self._get_job(job_id).sudo()
+        if job.state in {"pending", "processing"}:
+            raise UserError(_("El job todavía se está procesando."))
+        failed = job.line_ids.filtered(lambda line: line.state == "failed")
+        if not failed:
+            raise UserError(_("Este job no tiene filas con error."))
+        # Solo vuelven a la cola las filas con error; las listas se conservan.
+        # Las cargadas por MLA que no se pudieron completar se vuelven a buscar.
+        failed.write(
             {
                 "state": "pending",
                 "response_json": False,
@@ -918,36 +1162,33 @@ class LqaMercadolibrePricingService(models.AbstractModel):
         job.write(
             {
                 "state": "pending",
-                "success_count": 0,
                 "failed_count": 0,
                 "error_message": False,
                 "result_csv": False,
-                "started_at": False,
                 "finished_at": False,
                 "notified": False,
             }
         )
+        self._spawn_job_worker(job)
         return self._job_to_dict(job)
 
     @api.model
     def process_job(self, job_id):
-        job = self.env["lqa.mercadolibre.pricing.job"].browse(
+        job = self.env["lqa.mercadolibre.pricing.job"].sudo().browse(
             self._as_int(job_id, 0)
         ).exists()
-        if not job or job.state != "pending":
+        # El cron y el hilo que arranca al crear pueden llegar a la vez: solo
+        # sigue el que logra pasarlo de "pending" a "processing".
+        if not job or not self._claim_job(job):
             return {}
-
-        job.write(
-            {
-                "state": "processing",
-                "started_at": fields.Datetime.now(),
-                "error_message": "",
-            }
-        )
+        self.env.cr.commit()
         try:
+            self._resolve_mla_lines(job)
             self._process_job_lines(job)
             self._finish_job(job)
         except Exception as error:
+            self.env.cr.rollback()
+            job.invalidate_recordset()
             message = str(error)
             job.line_ids.filtered(lambda line: line.state == "pending").write(
                 {"state": "failed", "error_message": message}
@@ -955,13 +1196,129 @@ class LqaMercadolibrePricingService(models.AbstractModel):
             job.write(
                 {
                     "state": "failed",
-                    "failed_count": job.input_count,
+                    "success_count": len(job.line_ids.filtered(lambda line: line.state == "done")),
+                    "failed_count": len(job.line_ids.filtered(lambda line: line.state == "failed")),
                     "error_message": message,
                     "finished_at": fields.Datetime.now(),
                     "notified": False,
                 }
             )
+        self.env.cr.commit()
         return self._job_to_dict(job)
+
+    def _claim_job(self, job):
+        self.env.cr.execute(
+            """
+            UPDATE lqa_mercadolibre_pricing_job
+               SET state = 'processing',
+                   started_at = COALESCE(started_at, (now() at time zone 'utc')),
+                   error_message = NULL,
+                   write_date = (now() at time zone 'utc')
+             WHERE id = %s AND state = 'pending'
+         RETURNING id
+            """,
+            (job.id,),
+        )
+        claimed = bool(self.env.cr.fetchone())
+        job.invalidate_recordset()
+        return claimed
+
+    def _resolve_mla_lines(self, job):
+        """Completa SKU, tipo, categoria y precio de las filas cargadas por MLA."""
+        lines = job.line_ids.filtered(
+            lambda line: line.state == "pending"
+            and self._json_loads(line.input_payload_json).get("needsLookup")
+        )
+        if not lines:
+            return
+        found = self._catalog_lookup(list(dict.fromkeys(lines.mapped("mla"))))
+        for line in lines:
+            payload = self._json_loads(line.input_payload_json)
+            data = found.get(line.mla)
+            if not data:
+                line.write(
+                    {
+                        "state": "failed",
+                        "error_message": _("El MLA no está en Catalog Sync."),
+                    }
+                )
+                continue
+            row = {
+                "mla": line.mla,
+                "categoryId": self._clean(data.get("category_id")),
+                "publicationType": self._clean(data.get("listing_type_id")),
+                "sku": self._clean(data.get("sku")),
+                "salePrice": payload.get("salePrice") or self._as_float(data.get("price"), None),
+            }
+            if "meliContributionPercentage" in payload:
+                row["meliContributionPercentage"] = payload["meliContributionPercentage"]
+            missing = [
+                label
+                for field, label in (
+                    ("sku", "SKU"),
+                    ("categoryId", "categoría"),
+                    ("publicationType", "tipo de publicación"),
+                    ("salePrice", "precio"),
+                )
+                if row.get(field) in (None, "")
+            ]
+            if missing:
+                line.write(
+                    {
+                        "state": "failed",
+                        "error_message": _("Catalog Sync no tiene %s de este MLA.")
+                        % ", ".join(missing),
+                    }
+                )
+                continue
+            line.write(
+                {
+                    "category_id": row["categoryId"],
+                    "publication_type": row["publicationType"],
+                    "sku": row["sku"],
+                    "sale_price": row["salePrice"],
+                    "input_payload_json": json.dumps(row, ensure_ascii=False, default=str),
+                }
+            )
+        self.env.cr.commit()
+
+    def _catalog_lookup(self, item_ids):
+        if not item_ids:
+            return {}
+        endpoint = self.env["lqa.mercadolibre.catalog.service"]._catalog_endpoint()
+        timeout = http_timeout(self.LOOKUP_TIMEOUT)
+
+        def fetch(item_id):
+            for _attempt in range(2):
+                try:
+                    response = requests.get(
+                        endpoint,
+                        params={"itemId": item_id, "limit": 1},
+                        headers={"Accept": "application/json"},
+                        timeout=timeout,
+                    )
+                    response.raise_for_status()
+                    rows = (response.json() or {}).get("products") or []
+                    return item_id, rows[0] if rows and isinstance(rows[0], dict) else None
+                except (requests.RequestException, ValueError, AttributeError):
+                    continue
+            return item_id, None
+
+        found = {}
+        previous_stack = threading.stack_size()
+        try:
+            threading.stack_size(self.LOOKUP_STACK_BYTES)
+            with ThreadPoolExecutor(
+                max_workers=min(self.LOOKUP_CONCURRENCY, len(item_ids))
+            ) as executor:
+                found = dict(executor.map(fetch, item_ids))
+        except RuntimeError:
+            for item_id in item_ids:
+                if item_id not in found:
+                    found[item_id] = fetch(item_id)[1]
+        finally:
+            threading.stack_size(previous_stack)
+        return found
 
     @api.model
     def get_ready_notifications(self):
@@ -1019,18 +1376,28 @@ class LqaMercadolibrePricingService(models.AbstractModel):
     def _process_job_lines(self, job):
         endpoint, api_key, timeout = self._pricing_config()
         client = self.env["lqa.api.client"]
-        lines = job.line_ids.sorted("sequence")
+        lines = job.line_ids.filtered(lambda line: line.state == "pending").sorted("sequence")
         for chunk in self._chunks(lines, self.REQUEST_CHUNK_SIZE):
             payload = [json.loads(line.input_payload_json) for line in chunk]
-            response = client.request_absolute_json(
-                "POST",
-                endpoint,
-                payload=payload,
-                params={"page": 1, "perPage": len(payload)},
-                headers={"x-api-key": api_key},
-                timeout=timeout,
-            )
-            items = response.get("items") or []
+            try:
+                response = client.request_absolute_json(
+                    "POST",
+                    endpoint,
+                    payload=payload,
+                    params={"page": 1, "perPage": len(payload)},
+                    headers={"x-api-key": api_key},
+                    timeout=timeout,
+                )
+            except Exception as error:
+                # Un lote que falla no tira abajo el job: sus filas quedan con
+                # error y se pueden reintentar solas.
+                self.env.cr.rollback()
+                for line in chunk:
+                    line.invalidate_recordset()
+                    line.write({"state": "failed", "error_message": str(error)})
+                self.env.cr.commit()
+                continue
+            items = (response or {}).get("items") or []
             for index, line in enumerate(chunk):
                 item = items[index] if index < len(items) else {}
                 if item:
@@ -1043,6 +1410,7 @@ class LqaMercadolibrePricingService(models.AbstractModel):
                                 default=str,
                             ),
                             "error_message": "",
+                            **self._result_values(item),
                         }
                     )
                 else:
@@ -1052,6 +1420,48 @@ class LqaMercadolibrePricingService(models.AbstractModel):
                             "error_message": _("La API no devolvio resultado para esta fila."),
                         }
                     )
+            # Avance en vivo (y marca de vida para el cron de jobs trabados).
+            job.write(
+                {
+                    "success_count": len(job.line_ids.filtered(lambda line: line.state == "done")),
+                    "failed_count": len(job.line_ids.filtered(lambda line: line.state == "failed")),
+                }
+            )
+            self.env.cr.commit()
+
+    def _result_values(self, item):
+        item = item if isinstance(item, dict) else {}
+        results = item.get("resultados") or {}
+        prices = item.get("prices") or {}
+        precio = item.get("precio") or {}
+        total_costs = self._as_float(results.get("totalCosts"), 0) or 0
+        net = self._as_float(prices.get("sellerNetPrice"), 0) or 0
+        margin = self._as_float(
+            str(results.get("operatingProfitPercent") or "").replace("%", "").strip(),
+            0,
+        ) or 0
+        return {
+            "total_costs": total_costs,
+            "operating_profit": self._as_float(results.get("operatingProfit"), 0) or 0,
+            "margin_percent": margin,
+            "suggested_price": self._as_float(precio.get("suggestedPrice"), 0) or 0,
+            "seller_net_price": net,
+            "no_cost": not total_costs and not net,
+        }
+
+    def _backfill_results(self, job):
+        """Jobs anteriores a las columnas de resultado: se completan una vez."""
+        lines = self.env["lqa.mercadolibre.pricing.item"].sudo().search(
+            [
+                ("job_id", "=", job.id),
+                ("state", "=", "done"),
+                ("total_costs", "=", 0),
+                ("seller_net_price", "=", 0),
+                ("no_cost", "=", False),
+            ]
+        )
+        for line in lines:
+            line.write(self._result_values(self._json_loads(line.response_json)))
 
     def _finish_job(self, job):
         success_count = len(job.line_ids.filtered(lambda line: line.state == "done"))
@@ -1418,6 +1828,32 @@ class LqaMercadolibrePricingService(models.AbstractModel):
             raise AccessError(_("No tenés permisos para ver este proceso."))
         return import_job
 
+    def _result_filter_domain(self, result_filter):
+        priced = [("state", "=", "done"), ("no_cost", "=", False)]
+        return {
+            "profit": priced + [("operating_profit", ">", 0)],
+            "loss": priced + [("operating_profit", "<=", 0)],
+            "nocost": [("state", "=", "done"), ("no_cost", "=", True)],
+            "failed": [("state", "=", "failed")],
+            "pending": [("state", "=", "pending")],
+        }.get(result_filter, [])
+
+    def _job_summary(self, line_model, base):
+        counts = {
+            key: line_model.search_count(base + self._result_filter_domain(key))
+            for key in self.RESULT_FILTERS
+        }
+        priced = line_model.search(
+            base + [("state", "=", "done"), ("no_cost", "=", False)]
+        )
+        margins = priced.mapped("margin_percent")
+        return {
+            "counts": counts,
+            "avgMargin": round(sum(margins) / len(margins), 2) if margins else None,
+            "totalProfit": round(sum(priced.mapped("operating_profit")), 2),
+            "totalSales": round(sum(priced.mapped("sale_price")), 2),
+        }
+
     def _job_to_dict(self, job, include_lines=False):
         data = {
             "id": job.id,
@@ -1433,6 +1869,8 @@ class LqaMercadolibrePricingService(models.AbstractModel):
             "startedAt": fields.Datetime.to_string(job.started_at),
             "finishedAt": fields.Datetime.to_string(job.finished_at),
             "userName": job.user_id.name,
+            # Cuantas filas ya terminaron (listas o con error), para la barra.
+            "processedCount": job.success_count + job.failed_count,
             "canDownload": bool(job.result_csv or job.state in {"done", "failed"}),
         }
         if include_lines:
@@ -1442,7 +1880,7 @@ class LqaMercadolibrePricingService(models.AbstractModel):
     def _job_name(self, source_type, filename):
         if filename:
             return filename
-        label = "CSV" if source_type == "csv" else "Manual"
+        label = {"csv": "CSV", "mla": "MLAs"}.get(source_type, "Manual")
         return f"Pricing {label} {fields.Datetime.now()}"
 
     def _check_access(self):

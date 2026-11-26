@@ -1,13 +1,83 @@
 /** @odoo-module **/
 
-import { Component, onMounted, onWillStart, onWillUnmount, useState } from "@odoo/owl";
+import { Component, onWillStart, onWillUnmount, useState } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 
-const MANUAL_TEMPLATE = `mla,sku,tipo_publicacion,precio,categoria,meliContributionPercentage
-MLA2228742950,B0F47N62NN,gold_special,731399,MLA31040,2.4
-MLA987654321,SKU456,gold_pro,85000,MLA410558,`;
+const ADVANCED_TEMPLATE = `mla,sku,tipo_publicacion,precio,categoria,meliContributionPercentage
+MLA2228742950,B0F47N62NN,gold_special,731399,MLA31040,2.4`;
 const MAX_DIRECT_CSV_BYTES = 10 * 1024 * 1024;
+const LINE_LIMIT = 100;
+// Mientras algo se procesa se consulta seguido; si no, cada tanto.
+const FAST_POLL_MS = 3000;
+const SLOW_POLL_MS = 20000;
+
+// Mismas reglas que _parse_mla_text en el servidor (el servidor manda).
+const MLA_PATTERN = /MLA[-_ ]?(\d{6,})/gi;
+const BARE_ID_PATTERN = /^(\d{8,})\b(.*)$/;
+const PRICE_PATTERN = /^[\s,;|]+\$?\s*(\d[\d.,]*)\s*$/;
+
+function parsePrice(raw) {
+    let value = String(raw || "").trim().replace(/[.,]+$/, "");
+    if (!value) {
+        return null;
+    }
+    if (value.includes(".") && value.includes(",")) {
+        value = value.replace(/\./g, "").replace(",", ".");
+    } else if (value.includes(",")) {
+        const tail = value.slice(value.lastIndexOf(",") + 1);
+        value = tail.length <= 2
+            ? `${value.slice(0, value.lastIndexOf(",")).replace(/,/g, "")}.${tail}`
+            : value.replace(/,/g, "");
+    } else if ((value.match(/\./g) || []).length > 1 || (value.includes(".") && value.slice(value.lastIndexOf(".") + 1).length === 3)) {
+        value = value.replace(/\./g, "");
+    }
+    const price = Number(value);
+    return Number.isFinite(price) && price > 0 ? price : null;
+}
+
+function parseMlaText(text) {
+    const entries = new Map();
+    const ignored = [];
+    for (const raw of String(text || "").split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line) {
+            continue;
+        }
+        const matches = [...line.matchAll(MLA_PATTERN)];
+        if (matches.length > 1) {
+            for (const match of matches) {
+                const mla = `MLA${match[1]}`;
+                if (!entries.has(mla)) {
+                    entries.set(mla, null);
+                }
+            }
+            continue;
+        }
+        let mla;
+        let rest;
+        if (matches.length) {
+            mla = `MLA${matches[0][1]}`;
+            rest = line.slice(matches[0].index + matches[0][0].length);
+        } else {
+            const bare = line.match(BARE_ID_PATTERN);
+            if (!bare) {
+                ignored.push(line.slice(0, 80));
+                continue;
+            }
+            mla = `MLA${bare[1]}`;
+            rest = bare[2];
+        }
+        const number = rest.match(PRICE_PATTERN);
+        const price = number ? parsePrice(number[1]) : null;
+        if (price || !entries.has(mla)) {
+            entries.set(mla, price);
+        }
+    }
+    return { entries, ignored };
+}
+
+const LISTING_LABELS = { gold_special: "Clásica", gold_pro: "Premium", free: "Gratuita" };
 
 export class LqaMercadolibrePricing extends Component {
     static template = "lqa_admin_panel.MercadolibrePricing";
@@ -15,155 +85,213 @@ export class LqaMercadolibrePricing extends Component {
     setup() {
         this.notification = useService("notification");
         this.orm = useService("orm");
-        this.refreshTimer = null;
         this.state = useState({
+            tab: "mla",
+            // Por MLA
+            mlaText: "",
+            mlaName: "",
+            mlaContribution: "",
+            creatingMla: false,
+            // CSV
             csvName: "",
             csvContent: "",
-            manualText: MANUAL_TEMPLATE,
-            jobs: [],
-            selectedJobId: "",
-            selectedJob: null,
-            loadingJobs: true,
-            loadingJob: false,
             creatingCsv: false,
+            // Avanzado
+            manualText: ADVANCED_TEMPLATE,
             creatingManual: false,
-            downloadingJobId: "",
-            retryingJobId: "",
+            // Carpeta
             selectionFolders: [],
             selectedFolderId: "",
             folderImport: null,
             startingFolderImport: false,
             generatingFolderExcel: false,
             retryingFolderImport: false,
-            jobLineOffset: 0,
-            jobLineLimit: 200,
+            // Procesos
+            jobs: [],
+            loadingJobs: true,
+            selectedJobId: "",
+            selectedJob: null,
+            loadingJob: false,
+            downloadingJobId: "",
+            retryingJobId: "",
+            // Detalle
+            resultFilter: "all",
+            search: "",
+            sort: "",
+            lineOffset: 0,
+            expandedLineId: 0,
         });
 
-        // Sin await: la vista se dibuja al instante con su estado de carga y los
-        // datos llegan despues. Esperarlos dejaba congelada la pantalla anterior
-        // (con el overlay de carga) hasta que respondia el servidor.
         onWillStart(() => {
             this.lqaInitialLoad = (async () => {
                 await Promise.all([
                     this.loadJobs(),
                     this.loadSelectionFolders(),
-                    this.loadFolderImport(),
+                    this.loadFolderImport(false),
                 ]);
+                this.schedulePoll();
             })();
         });
 
-        onMounted(() => {
-            this.refreshTimer = window.setInterval(
-                () => this.refreshWorkspace(),
-                10000
-            );
-        });
-
         onWillUnmount(() => {
-            if (this.refreshTimer) {
-                window.clearInterval(this.refreshTimer);
-            }
+            clearTimeout(this.pollTimer);
+            clearTimeout(this.searchTimer);
         });
     }
 
-    get selectedJobFromList() {
-        return this.state.jobs.find(
-            (job) => String(job.id) === String(this.state.selectedJobId)
+    setTab(tab) {
+        this.state.tab = tab;
+    }
+
+    isSelectedJob(job) {
+        return String(job?.id) === String(this.state.selectedJobId);
+    }
+
+    isRetrying(job) {
+        return String(job?.id) === String(this.state.retryingJobId);
+    }
+
+    isDownloading(job) {
+        return String(job?.id) === String(this.state.downloadingJobId);
+    }
+
+    noop() {}
+
+    // ------------------------------------------------------------ refresco
+
+    get hasActiveWork() {
+        return (
+            this.state.jobs.some((job) => ["pending", "processing"].includes(job.state)) ||
+            ["queued", "running"].includes(this.state.folderImport?.state) ||
+            ["queued", "running"].includes(this.state.folderImport?.exportState) ||
+            (this.state.folderImport?.pendingJobs || 0) > 0
         );
     }
 
-    async loadJobs(showLoader = true) {
-        if (showLoader) {
-            this.state.loadingJobs = true;
+    schedulePoll() {
+        clearTimeout(this.pollTimer);
+        this.pollTimer = setTimeout(async () => {
+            await Promise.all([this.loadJobs(false), this.loadFolderImport(true)]);
+            this.schedulePoll();
+        }, this.hasActiveWork ? FAST_POLL_MS : SLOW_POLL_MS);
+    }
+
+    // ------------------------------------------------------------ por MLA
+
+    get mlaPreview() {
+        const { entries, ignored } = parseMlaText(this.state.mlaText);
+        const prices = [...entries.values()].filter(Boolean).length;
+        return { count: entries.size, withPrice: prices, ignored };
+    }
+
+    async submitMla() {
+        const preview = this.mlaPreview;
+        if (!preview.count) {
+            this.notification.add("Pegá al menos un MLA.", { type: "warning" });
+            return;
         }
+        this.state.creatingMla = true;
         try {
-            this.state.jobs = await this.orm.call(
+            const job = await this.orm.call(
                 "lqa.mercadolibre.pricing.service",
-                "get_jobs",
-                [30]
+                "create_mla_job",
+                [
+                    this.state.mlaText,
+                    this.state.mlaContribution === "" ? null : Number(this.state.mlaContribution),
+                    this.state.mlaName,
+                ]
             );
-            if (
-                this.state.selectedJobId &&
-                !this.state.jobs.some(
-                    (job) => String(job.id) === String(this.state.selectedJobId)
-                )
-            ) {
-                this.state.selectedJobId = "";
-                this.state.selectedJob = null;
+            this.state.mlaText = "";
+            this.state.mlaName = "";
+            let message = `Calculando ${this.formatNumber(job.inputCount)} MLAs. Los datos se completan solos desde Catalog Sync.`;
+            if (job.ignoredCount) {
+                message += ` Se ignoraron ${job.ignoredCount} líneas sin MLA.`;
             }
-            if (!this.state.selectedJobId && this.state.jobs.length) {
-                this.state.selectedJobId = String(this.state.jobs[0].id);
-            }
-            if (this.state.selectedJobId) {
-                await this.loadJob(this.state.selectedJobId, false);
-            }
+            this.notification.add(message, { type: "success" });
+            await this.afterJobCreated(job);
         } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudieron cargar los jobs de pricing.",
-                { type: "danger" }
-            );
+            this.notification.add(error?.data?.message || "No se pudo crear el pricing.", { type: "danger" });
         } finally {
-            this.state.loadingJobs = false;
+            this.state.creatingMla = false;
         }
     }
 
-    async loadJob(jobId, showLoader = true, offset = null) {
-        if (!jobId) {
-            this.state.selectedJob = null;
-            return;
-        }
-        if (showLoader) {
-            this.state.loadingJob = true;
-        }
-        const isNewJob = String(jobId) !== String(this.state.selectedJobId);
-        if (isNewJob) {
-            this.state.jobLineOffset = 0;
-        } else if (offset !== null) {
-            this.state.jobLineOffset = Math.max(Number(offset) || 0, 0);
-        }
-        try {
-            this.state.selectedJob = await this.orm.call(
-                "lqa.mercadolibre.pricing.service",
-                "get_job",
-                [
-                    Number(jobId),
-                    this.state.jobLineLimit,
-                    this.state.jobLineOffset,
-                ]
-            );
-            this.state.selectedJobId = String(jobId);
-        } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudo cargar el job.",
-                { type: "danger" }
-            );
-        } finally {
-            this.state.loadingJob = false;
-        }
+    async afterJobCreated(job) {
+        this.resetDetailFilters();
+        this.state.selectedJobId = String(job.id);
+        await this.loadJobs(false);
+        await this.loadJob(job.id);
+        this.schedulePoll();
     }
+
+    // ------------------------------------------------------------ CSV
 
     async onCsvSelected(event) {
         const file = event.target.files?.[0];
         if (!file) {
             return;
         }
+        event.target.value = "";
         if (file.size > MAX_DIRECT_CSV_BYTES) {
-            event.target.value = "";
             this.notification.add(
-                "Este CSV es demasiado grande para la carga directa. Elegí la carpeta guardada en la sección 'Desde Selecciones'.",
+                "El CSV es demasiado grande para la carga directa: usá una carpeta de Selecciones.",
                 { type: "warning" }
             );
             return;
         }
         this.state.csvName = file.name;
         this.state.csvContent = await file.text();
-        event.target.value = "";
-        this.notification.add(`Archivo listo: ${file.name}`, { type: "success" });
     }
 
-    async refreshWorkspace() {
-        await Promise.all([this.loadJobs(false), this.loadFolderImport(false)]);
+    clearCsv() {
+        this.state.csvName = "";
+        this.state.csvContent = "";
     }
+
+    async submitCsv() {
+        if (!this.state.csvContent) {
+            return;
+        }
+        this.state.creatingCsv = true;
+        try {
+            const job = await this.orm.call(
+                "lqa.mercadolibre.pricing.service",
+                "create_job",
+                ["csv", this.state.csvContent, this.state.csvName]
+            );
+            this.clearCsv();
+            this.notification.add("Pricing iniciado.", { type: "success" });
+            await this.afterJobCreated(job);
+        } catch (error) {
+            this.notification.add(error?.data?.message || "No se pudo procesar el CSV.", { type: "danger" });
+        } finally {
+            this.state.creatingCsv = false;
+        }
+    }
+
+    // ------------------------------------------------------------ avanzado
+
+    async submitManual() {
+        if (!String(this.state.manualText || "").trim()) {
+            return;
+        }
+        this.state.creatingManual = true;
+        try {
+            const job = await this.orm.call(
+                "lqa.mercadolibre.pricing.service",
+                "create_job",
+                ["manual", this.state.manualText, ""]
+            );
+            this.notification.add("Pricing iniciado.", { type: "success" });
+            await this.afterJobCreated(job);
+        } catch (error) {
+            this.notification.add(error?.data?.message || "No se pudo procesar la carga.", { type: "danger" });
+        } finally {
+            this.state.creatingManual = false;
+        }
+    }
+
+    // ------------------------------------------------------------ carpeta
 
     async loadSelectionFolders() {
         try {
@@ -175,60 +303,38 @@ export class LqaMercadolibrePricing extends Component {
             if (!this.state.selectedFolderId && this.state.selectionFolders.length) {
                 this.state.selectedFolderId = String(this.state.selectionFolders[0].id);
             }
-        } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudieron cargar las carpetas guardadas.",
-                { type: "danger" }
-            );
+        } catch {
+            this.state.selectionFolders = [];
         }
     }
 
-    async loadFolderImport(showNotification = true) {
+    async loadFolderImport(notify = true) {
         try {
-            const importJob = await this.orm.call(
+            const importJob = await this.orm.silent.call(
                 "lqa.mercadolibre.pricing.service",
                 "get_active_folder_import",
                 []
             );
-            const previousState = this.state.folderImport?.pricingState;
-            const previousExportState = this.state.folderImport?.exportState;
+            const previous = this.state.folderImport;
             this.state.folderImport = importJob || null;
-            if (
-                showNotification &&
-                importJob?.pricingState === "done" &&
-                previousState &&
-                previousState !== "done"
-            ) {
-                this.notification.add(
-                    `Proceso finalizado: ${this.formatNumber(importJob.success)} publicaciones listas.`,
-                    { type: "success" }
-                );
+            if (notify && previous && importJob) {
+                if (importJob.pricingState === "done" && previous.pricingState !== "done") {
+                    this.notification.add(
+                        `Carpeta procesada: ${this.formatNumber(importJob.success)} publicaciones con pricing.`,
+                        { type: "success" }
+                    );
+                }
+                if (importJob.exportState === "done" && previous.exportState !== "done") {
+                    this.notification.add("El Excel de la carpeta está listo.", { type: "success" });
+                }
             }
-            if (
-                showNotification &&
-                importJob?.exportState === "done" &&
-                previousExportState &&
-                previousExportState !== "done"
-            ) {
-                this.notification.add("El Excel consolidado está listo para descargar.", {
-                    type: "success",
-                });
-            }
-        } catch (error) {
-            if (showNotification) {
-                this.notification.add(
-                    error?.data?.message || "No se pudo consultar la importación.",
-                    { type: "danger" }
-                );
-            }
+        } catch {
+            // El proximo ciclo vuelve a intentar.
         }
     }
 
     async startFolderImport() {
         if (!this.state.selectedFolderId) {
-            this.notification.add("Elegí una carpeta de Selecciones.", {
-                type: "warning",
-            });
             return;
         }
         this.state.startingFolderImport = true;
@@ -238,24 +344,13 @@ export class LqaMercadolibrePricing extends Component {
                 "start_selection_folder_import",
                 [Number(this.state.selectedFolderId)]
             );
-            this.notification.add(
-                "El procesamiento masivo comenzó. La pantalla mostrará un único proceso.",
-                { type: "info" }
-            );
+            this.notification.add("Procesando la carpeta en segundo plano.", { type: "info" });
+            this.schedulePoll();
         } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudo iniciar el procesamiento de la carpeta.",
-                { type: "danger" }
-            );
+            this.notification.add(error?.data?.message || "No se pudo iniciar la carpeta.", { type: "danger" });
         } finally {
             this.state.startingFolderImport = false;
         }
-    }
-
-    get folderImportProgress() {
-        const total = Number(this.state.folderImport?.total || 0);
-        const processed = Number(this.state.folderImport?.processed || 0);
-        return total ? Math.min(Math.round((processed / total) * 100), 100) : 0;
     }
 
     get isFolderImportRunning() {
@@ -280,15 +375,9 @@ export class LqaMercadolibrePricing extends Component {
                 "start_folder_import_export",
                 [importJob.id]
             );
-            this.notification.add(
-                "Estamos generando un único Excel con todo el resultado.",
-                { type: "info" }
-            );
+            this.schedulePoll();
         } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudo generar el Excel consolidado.",
-                { type: "danger" }
-            );
+            this.notification.add(error?.data?.message || "No se pudo generar el Excel.", { type: "danger" });
         } finally {
             this.state.generatingFolderExcel = false;
         }
@@ -306,115 +395,188 @@ export class LqaMercadolibrePricing extends Component {
                 "retry_failed_folder_jobs",
                 [importJob.id]
             );
-            this.notification.add(
-                "Los lotes con error volvieron a la cola.",
-                { type: "success" }
-            );
+            this.notification.add("Los lotes con error volvieron a la cola.", { type: "success" });
+            this.schedulePoll();
         } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudieron reintentar los errores.",
-                { type: "danger" }
-            );
+            this.notification.add(error?.data?.message || "No se pudieron reintentar los errores.", { type: "danger" });
         } finally {
             this.state.retryingFolderImport = false;
         }
     }
 
     downloadFolderExcel() {
-        if (!this.state.folderImport?.downloadUrl) {
-            return;
+        if (this.state.folderImport?.downloadUrl) {
+            window.location.href = this.state.folderImport.downloadUrl;
         }
-        const anchor = document.createElement("a");
-        anchor.href = this.state.folderImport.downloadUrl;
-        anchor.download = "";
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
     }
 
-    previousJobLines() {
+    // ------------------------------------------------------------ procesos
+
+    async loadJobs(showLoader = true) {
+        if (showLoader) {
+            this.state.loadingJobs = true;
+        }
+        try {
+            const previous = new Map(this.state.jobs.map((job) => [job.id, job.state]));
+            this.state.jobs = await this.orm.silent.call(
+                "lqa.mercadolibre.pricing.service",
+                "get_jobs",
+                [30]
+            );
+            if (!this.state.selectedJobId && this.state.jobs.length) {
+                this.state.selectedJobId = String(this.state.jobs[0].id);
+            }
+            const selected = this.selectedJobFromList;
+            if (!selected) {
+                this.state.selectedJob = null;
+            } else if (
+                !this.state.selectedJob ||
+                ["pending", "processing"].includes(selected.state) ||
+                previous.get(selected.id) !== selected.state
+            ) {
+                // Mientras se procesa, el detalle se actualiza solo.
+                await this.loadJob(selected.id, false);
+            }
+        } catch (error) {
+            if (showLoader) {
+                this.notification.add(error?.data?.message || "No se pudieron cargar los procesos.", { type: "danger" });
+            }
+        } finally {
+            this.state.loadingJobs = false;
+        }
+    }
+
+    get selectedJobFromList() {
+        return this.state.jobs.find((job) => String(job.id) === String(this.state.selectedJobId));
+    }
+
+    async selectJob(job) {
+        if (String(job.id) === String(this.state.selectedJobId)) {
+            return;
+        }
+        this.state.selectedJobId = String(job.id);
+        this.resetDetailFilters();
+        await this.loadJob(job.id);
+    }
+
+    resetDetailFilters() {
+        this.state.resultFilter = "all";
+        this.state.search = "";
+        this.state.sort = "";
+        this.state.lineOffset = 0;
+        this.state.expandedLineId = 0;
+    }
+
+    async loadJob(jobId, showLoader = true) {
+        if (!jobId) {
+            return;
+        }
+        if (showLoader) {
+            this.state.loadingJob = true;
+        }
+        try {
+            const job = await this.orm.silent.call(
+                "lqa.mercadolibre.pricing.service",
+                "get_job",
+                [
+                    Number(jobId),
+                    LINE_LIMIT,
+                    this.state.lineOffset,
+                    this.state.resultFilter,
+                    this.state.search,
+                    this.state.sort,
+                ]
+            );
+            if (String(jobId) === String(this.state.selectedJobId)) {
+                this.state.selectedJob = job;
+            }
+        } catch (error) {
+            this.notification.add(error?.data?.message || "No se pudo cargar el proceso.", { type: "danger" });
+        } finally {
+            this.state.loadingJob = false;
+        }
+    }
+
+    async setResultFilter(filter) {
+        this.state.resultFilter = filter;
+        this.state.lineOffset = 0;
+        await this.loadJob(this.state.selectedJobId);
+    }
+
+    async onSortChange(event) {
+        this.state.sort = event.target.value;
+        this.state.lineOffset = 0;
+        await this.loadJob(this.state.selectedJobId);
+    }
+
+    onSearchInput(event) {
+        this.state.search = event.target.value;
+        clearTimeout(this.searchTimer);
+        this.searchTimer = setTimeout(() => {
+            this.state.lineOffset = 0;
+            this.loadJob(this.state.selectedJobId);
+        }, 350);
+    }
+
+    async previousLines() {
         const pagination = this.state.selectedJob?.linePagination;
         if (pagination?.hasPrevious) {
-            this.loadJob(
-                this.state.selectedJobId,
-                true,
-                Math.max(pagination.offset - pagination.limit, 0)
-            );
+            this.state.lineOffset = Math.max(pagination.offset - pagination.limit, 0);
+            await this.loadJob(this.state.selectedJobId);
         }
     }
 
-    nextJobLines() {
+    async nextLines() {
         const pagination = this.state.selectedJob?.linePagination;
         if (pagination?.hasNext) {
-            this.loadJob(
-                this.state.selectedJobId,
-                true,
-                pagination.offset + pagination.limit
-            );
+            this.state.lineOffset = pagination.offset + pagination.limit;
+            await this.loadJob(this.state.selectedJobId);
         }
     }
 
-    clearCsv() {
-        this.state.csvName = "";
-        this.state.csvContent = "";
+    toggleLine(line) {
+        this.state.expandedLineId = this.state.expandedLineId === line.id ? 0 : line.id;
     }
 
-    async submitCsv() {
-        if (!this.state.csvContent) {
-            this.notification.add("Seleccioná un CSV para procesar.", {
-                type: "warning",
-            });
-            return;
+    get resultFilters() {
+        const counts = this.state.selectedJob?.summary?.counts || {};
+        return [
+            { id: "all", label: "Todas", count: counts.all },
+            { id: "profit", label: "Con ganancia", count: counts.profit, tone: "ok" },
+            { id: "loss", label: "Con pérdida", count: counts.loss, tone: "danger" },
+            { id: "nocost", label: "Sin costo", count: counts.nocost, tone: "warn" },
+            { id: "failed", label: "Errores", count: counts.failed, tone: "danger" },
+            { id: "pending", label: "Pendientes", count: counts.pending },
+        ].filter((item) => item.id === "all" || item.count);
+    }
+
+    get jobProgress() {
+        const job = this.state.selectedJob;
+        if (!job?.inputCount) {
+            return 0;
         }
-        this.state.creatingCsv = true;
+        return Math.min(Math.round((job.processedCount / job.inputCount) * 100), 100);
+    }
+
+    jobListProgress(job) {
+        return job.inputCount ? Math.min(Math.round((job.processedCount / job.inputCount) * 100), 100) : 0;
+    }
+
+    isJobActive(job) {
+        return ["pending", "processing"].includes(job?.state);
+    }
+
+    async retryJob(job) {
+        this.state.retryingJobId = String(job.id);
         try {
-            const job = await this.orm.call(
-                "lqa.mercadolibre.pricing.service",
-                "create_job",
-                ["csv", this.state.csvContent, this.state.csvName]
-            );
-            this.clearCsv();
+            await this.orm.call("lqa.mercadolibre.pricing.service", "retry_job", [job.id]);
+            this.notification.add("Las filas con error se vuelven a calcular.", { type: "info" });
             await this.loadJobs(false);
-            await this.loadJob(job.id);
-            this.notification.add("Job de pricing creado. Se procesa en segundo plano.", {
-                type: "success",
-            });
+            this.schedulePoll();
         } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudo crear el job desde CSV.",
-                { type: "danger" }
-            );
+            this.notification.add(error?.data?.message || "No se pudo reintentar.", { type: "danger" });
         } finally {
-            this.state.creatingCsv = false;
-        }
-    }
-
-    async submitManual() {
-        if (!String(this.state.manualText || "").trim()) {
-            this.notification.add("Pega filas CSV o JSON para procesar.", {
-                type: "warning",
-            });
-            return;
-        }
-        this.state.creatingManual = true;
-        try {
-            const job = await this.orm.call(
-                "lqa.mercadolibre.pricing.service",
-                "create_job",
-                ["manual", this.state.manualText, ""]
-            );
-            await this.loadJobs(false);
-            await this.loadJob(job.id);
-            this.notification.add("Job manual creado. Se procesa en segundo plano.", {
-                type: "success",
-            });
-        } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudo crear el job manual.",
-                { type: "danger" }
-            );
-        } finally {
-            this.state.creatingManual = false;
+            this.state.retryingJobId = "";
         }
     }
 
@@ -426,79 +588,43 @@ export class LqaMercadolibrePricing extends Component {
                 "download_job_xlsx",
                 [job.id]
             );
-            this.downloadBase64File(
-                result.filename,
-                result.content,
-                result.mimetype
-            );
+            const binary = window.atob(result.content || "");
+            const bytes = new Uint8Array(binary.length);
+            for (let index = 0; index < binary.length; index++) {
+                bytes[index] = binary.charCodeAt(index);
+            }
+            const url = URL.createObjectURL(new Blob([bytes], { type: result.mimetype }));
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = result.filename || "pricing.xlsx";
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            URL.revokeObjectURL(url);
         } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudo descargar el Excel.",
-                { type: "danger" }
-            );
+            this.notification.add(error?.data?.message || "No se pudo descargar el Excel.", { type: "danger" });
         } finally {
             this.state.downloadingJobId = "";
         }
     }
 
-    async retryJob(job) {
-        this.state.retryingJobId = String(job.id);
+    async copyText(value, label) {
         try {
-            await this.orm.call(
-                "lqa.mercadolibre.pricing.service",
-                "retry_job",
-                [job.id]
-            );
-            await this.loadJobs(false);
-            this.notification.add(
-                "El job volvió a la cola y se procesará en lotes de 50.",
-                { type: "success" }
-            );
-        } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudo reintentar el job.",
-                { type: "danger" }
-            );
-        } finally {
-            this.state.retryingJobId = "";
+            await navigator.clipboard.writeText(String(value));
+            this.notification.add(`${label} copiado: ${value}`, { type: "success" });
+        } catch {
+            this.notification.add("No se pudo copiar.", { type: "warning" });
         }
     }
 
-    isRetryingJob(job) {
-        return String(job?.id) === String(this.state.retryingJobId);
+    // ------------------------------------------------------------ formato
+
+    listingLabel(value) {
+        return LISTING_LABELS[value] || value || "—";
     }
 
-    downloadBase64File(filename, content, mimetype) {
-        const binary = window.atob(content || "");
-        const bytes = new Uint8Array(binary.length);
-        for (let index = 0; index < binary.length; index++) {
-            bytes[index] = binary.charCodeAt(index);
-        }
-        const blob = new Blob([bytes], {
-            type:
-                mimetype ||
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        });
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = filename || "mercadolibre-pricing.xlsx";
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        URL.revokeObjectURL(url);
-    }
-
-    isSelectedJob(job) {
-        return String(job.id) === String(this.state.selectedJobId);
-    }
-
-    isDownloading(job) {
-        return String(job.id) === String(this.state.downloadingJobId);
-    }
-
-    canDownload(job) {
-        return ["done", "failed"].includes(job.state);
+    sourceLabel(source) {
+        return { csv: "CSV", manual: "Avanzado", mla: "MLAs", folder: "Carpeta" }[source] || source;
     }
 
     stateLabel(state) {
@@ -506,7 +632,7 @@ export class LqaMercadolibrePricing extends Component {
             {
                 pending: "En cola",
                 processing: "Procesando",
-                preparing: "Preparando lotes",
+                preparing: "Preparando",
                 running: "Procesando",
                 queued: "En cola",
                 done: "Listo",
@@ -515,11 +641,48 @@ export class LqaMercadolibrePricing extends Component {
         );
     }
 
+    marginTone(line) {
+        if (line.state !== "done") {
+            return "";
+        }
+        if (line.noCost) {
+            return "is-warn";
+        }
+        if (line.operatingProfit <= 0) {
+            return "is-loss";
+        }
+        return line.marginValue >= 15 ? "is-good" : "is-thin";
+    }
+
+    mlaUrl(mla) {
+        const digits = String(mla || "").replace(/\D/g, "");
+        return digits ? `https://articulo.mercadolibre.com.ar/MLA-${digits}` : "";
+    }
+
+    relativeTime(value) {
+        if (!value) {
+            return "";
+        }
+        const date = new Date(`${value.replace(" ", "T")}Z`);
+        const minutes = Math.round((Date.now() - date.getTime()) / 60000);
+        if (minutes < 1) {
+            return "recién";
+        }
+        if (minutes < 60) {
+            return `hace ${minutes} min`;
+        }
+        const hours = Math.round(minutes / 60);
+        if (hours < 24) {
+            return `hace ${hours} h`;
+        }
+        return this.formatDateTime(value);
+    }
+
     formatDateTime(value) {
         if (!value) {
-            return "-";
+            return "—";
         }
-        const date = new Date(`${value}Z`);
+        const date = new Date(`${value.replace(" ", "T")}Z`);
         if (Number.isNaN(date.getTime())) {
             return value;
         }
@@ -532,27 +695,34 @@ export class LqaMercadolibrePricing extends Component {
         }).format(date);
     }
 
-    formatCurrency(value, currency = "ARS") {
-        const numericValue = Number(value);
-        if (!Number.isFinite(numericValue)) {
-            return "-";
+    formatCurrency(value) {
+        const number = Number(value);
+        if (value === null || value === undefined || value === "" || !Number.isFinite(number)) {
+            return "—";
         }
         return new Intl.NumberFormat("es-AR", {
             style: "currency",
-            currency,
+            currency: "ARS",
             maximumFractionDigits: 0,
-        }).format(numericValue);
+        }).format(number);
     }
 
     formatNumber(value) {
-        const numericValue = Number(value);
-        if (!Number.isFinite(numericValue)) {
-            return "0";
+        const number = Number(value);
+        return Number.isFinite(number) ? new Intl.NumberFormat("es-AR").format(number) : "0";
+    }
+
+    formatPercent(value) {
+        const number = Number(value);
+        if (value === null || value === undefined || !Number.isFinite(number)) {
+            return "—";
         }
-        return new Intl.NumberFormat("es-AR").format(numericValue);
+        return `${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 1 }).format(number)}%`;
+    }
+
+    breakdownValue(row) {
+        return row.kind === "cost" ? `− ${this.formatCurrency(row.value)}` : this.formatCurrency(row.value);
     }
 }
 
-registry
-    .category("actions")
-    .add("lqa_admin_panel.mercadolibre_pricing", LqaMercadolibrePricing);
+registry.category("actions").add("lqa_admin_panel.mercadolibre_pricing", LqaMercadolibrePricing);

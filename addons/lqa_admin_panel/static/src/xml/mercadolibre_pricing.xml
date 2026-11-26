@@ -1,371 +1,512 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <templates xml:space="preserve">
     <t t-name="lqa_admin_panel.MercadolibrePricing">
-        <div class="o_lqa_meli_pricing">
-            <header class="o_lqa_meli_pricing__header">
-                <div>
-                    <p>MercadoLibre</p>
-                    <h1>Pricing</h1>
-                    <span>Composicion masiva de precio, rentabilidad y precio sugerido.</span>
-                </div>
-                <img
-                    src="/lqa_admin_panel/static/src/img/mercadolibre-logo.png?v=2"
-                    alt="Mercado Libre"
-                />
-            </header>
+        <div class="o_lqa_prc">
+            <div class="o_lqa_prc__inner">
 
-            <section class="o_lqa_meli_pricing_workspace">
-                <article class="o_lqa_meli_pricing_input o_lqa_meli_pricing_folder_import">
-                    <div class="o_lqa_meli_pricing_section_head">
+                <header class="o_lqa_prc__header">
+                    <div class="o_lqa_prc__title">
+                        <img src="/lqa_admin_panel/static/src/img/mercadolibre-logo.png?v=2" alt="Mercado Libre"/>
                         <div>
-                            <p class="o_lqa_meli_pricing_eyebrow">Ejecución masiva</p>
-                            <h2>Procesar una selección completa</h2>
-                            <span>
-                                Un solo proceso visible, lotes seguros en segundo plano y un Excel consolidado.
-                            </span>
+                            <p>MercadoLibre · Pricing</p>
+                            <h1>Rentabilidad y precio sugerido</h1>
                         </div>
-                        <span class="o_lqa_meli_pricing_secure_badge">
-                            <i class="fa fa-shield"/> Proceso protegido
-                        </span>
                     </div>
-                    <div class="o_lqa_meli_pricing_folder_tools">
-                        <select class="form-select" t-model="state.selectedFolderId">
-                            <option value="">Elegir carpeta</option>
-                            <option
-                                t-foreach="state.selectionFolders"
-                                t-as="folder"
-                                t-key="folder.id"
-                                t-att-value="folder.id"
-                            >
-                                <t t-esc="folder.name"/> ·
-                                <t t-esc="formatNumber(folder.productCount)"/> publicaciones
-                            </option>
-                        </select>
-                        <button
-                            type="button"
-                            class="btn btn-primary"
-                            t-att-disabled="!state.selectedFolderId || state.startingFolderImport || isFolderImportRunning"
-                            t-on-click="startFolderImport"
-                        >
-                            <t t-if="state.startingFolderImport">Preparando...</t>
-                            <t t-else="">Iniciar procesamiento</t>
+                    <span t-if="hasActiveWork" class="o_lqa_prc__live">
+                        <i class="o_lqa_prc__spinner"/> Procesando
+                    </span>
+                </header>
+
+                <!-- Nuevo pricing -->
+                <section class="o_lqa_prc__card o_lqa_prc__new">
+                    <nav class="o_lqa_prc__tabs" role="tablist">
+                        <button type="button" t-att-class="state.tab === 'mla' ? 'is-on' : ''" t-on-click="() => this.setTab('mla')">
+                            <i class="fa fa-keyboard-o"/> Por MLA
                         </button>
+                        <button type="button" t-att-class="state.tab === 'csv' ? 'is-on' : ''" t-on-click="() => this.setTab('csv')">
+                            <i class="fa fa-file-text-o"/> Archivo CSV
+                        </button>
+                        <button type="button" t-att-class="state.tab === 'folder' ? 'is-on' : ''" t-on-click="() => this.setTab('folder')">
+                            <i class="fa fa-folder-o"/> Carpeta de Selecciones
+                            <i t-if="isFolderImportRunning" class="o_lqa_prc__spinner"/>
+                        </button>
+                        <button type="button" t-att-class="state.tab === 'advanced' ? 'is-on' : ''" t-on-click="() => this.setTab('advanced')">
+                            <i class="fa fa-code"/> Avanzado
+                        </button>
+                    </nav>
+
+                    <div t-if="state.tab === 'mla'" class="o_lqa_prc__pane is-mla">
+                        <div class="o_lqa_prc__mlainput">
+                            <label for="lqa-prc-mlas">MLAs a calcular</label>
+                            <textarea
+                                id="lqa-prc-mlas"
+                                rows="7"
+                                placeholder="MLA2228742950&#10;MLA3094930740  731399&#10;3094930741&#10;https://articulo.mercadolibre.com.ar/MLA-4202318186-…"
+                                t-model="state.mlaText"
+                                t-att-disabled="state.creatingMla"
+                            />
+                            <div class="o_lqa_prc__detect">
+                                <span t-if="mlaPreview.count" class="is-ok">
+                                    <i class="fa fa-check-circle"/>
+                                    <b t-esc="formatNumber(mlaPreview.count)"/> MLA<t t-if="mlaPreview.count !== 1">s</t>
+                                    <t t-if="mlaPreview.withPrice"> · <t t-esc="mlaPreview.withPrice"/> con precio a simular</t>
+                                </span>
+                                <span t-else="">Uno por línea. Sirve el MLA, el número solo o el link de la publicación.</span>
+                                <span t-if="mlaPreview.ignored.length" class="is-warn" t-att-title="mlaPreview.ignored.join('\n')">
+                                    <i class="fa fa-exclamation-triangle"/>
+                                    <t t-esc="mlaPreview.ignored.length"/> línea<t t-if="mlaPreview.ignored.length !== 1">s</t> sin MLA
+                                </span>
+                            </div>
+                        </div>
+                        <aside class="o_lqa_prc__mlaside">
+                            <div class="o_lqa_prc__how">
+                                <strong>Cómo funciona</strong>
+                                <ol>
+                                    <li>Pegá los MLA. Si querés simular otro precio, ponelo al lado: <code>MLA123 731399</code>.</li>
+                                    <li>SKU, tipo de publicación, categoría y precio actual se toman de Catalog Sync.</li>
+                                    <li>Se calcula costo, ganancia, margen y precio sugerido.</li>
+                                </ol>
+                            </div>
+                            <label class="o_lqa_prc__field">
+                                <span>Aporte de MercadoLibre <small>(%, opcional)</small></span>
+                                <input type="number" min="0" max="100" step="0.1" placeholder="Ej.: 2,4" t-model="state.mlaContribution"/>
+                            </label>
+                            <label class="o_lqa_prc__field">
+                                <span>Nombre <small>(opcional)</small></span>
+                                <input type="text" placeholder="Ej.: Black Friday celulares" t-model="state.mlaName"/>
+                            </label>
+                            <button
+                                type="button"
+                                class="o_lqa_prc__btn is-primary is-block"
+                                t-att-disabled="state.creatingMla or !mlaPreview.count"
+                                t-on-click="submitMla"
+                            >
+                                <i t-if="state.creatingMla" class="o_lqa_prc__spinner"/>
+                                <i t-else="" class="fa fa-calculator"/>
+                                <span>
+                                    <t t-if="state.creatingMla">Creando…</t>
+                                    <t t-elif="mlaPreview.count">Calcular <t t-esc="formatNumber(mlaPreview.count)"/> MLA<t t-if="mlaPreview.count !== 1">s</t></t>
+                                    <t t-else="">Calcular pricing</t>
+                                </span>
+                            </button>
+                        </aside>
                     </div>
-                    <div t-if="state.folderImport" t-att-class="'o_lqa_meli_pricing_import_status is-' + state.folderImport.pricingState">
-                        <div class="o_lqa_meli_pricing_import_summary">
-                            <div class="o_lqa_meli_pricing_import_title">
-                                <span class="o_lqa_meli_pricing_import_icon"><i class="fa fa-folder-open"/></span>
+
+                    <div t-elif="state.tab === 'csv'" class="o_lqa_prc__pane">
+                        <p class="o_lqa_prc__hint">
+                            Hasta 5.000 filas. Columnas: <code>mla, sku, tipo_publicacion, precio, categoria</code> y, opcional, <code>meliContributionPercentage</code>.
+                        </p>
+                        <div class="o_lqa_prc__drop">
+                            <i class="fa fa-file-text-o"/>
+                            <div>
+                                <strong t-if="state.csvName" t-esc="state.csvName"/>
+                                <strong t-else="">Elegí un archivo CSV</strong>
+                                <small t-if="!state.csvName">Si tenés solo MLAs, usá la pestaña "Por MLA".</small>
+                            </div>
+                            <label class="o_lqa_prc__btn is-ghost">
+                                <i class="fa fa-upload"/>
+                                <span>Elegir archivo</span>
+                                <input type="file" accept=".csv,text/csv,text/plain" t-on-change="onCsvSelected"/>
+                            </label>
+                            <button t-if="state.csvName" type="button" class="o_lqa_prc__iconbtn" t-on-click="clearCsv" title="Quitar">
+                                <i class="fa fa-times"/>
+                            </button>
+                            <button
+                                type="button"
+                                class="o_lqa_prc__btn is-primary"
+                                t-att-disabled="!state.csvContent or state.creatingCsv"
+                                t-on-click="submitCsv"
+                            >
+                                <i t-if="state.creatingCsv" class="o_lqa_prc__spinner"/>
+                                <span>Calcular</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div t-elif="state.tab === 'folder'" class="o_lqa_prc__pane">
+                        <p class="o_lqa_prc__hint">Calcula todas las publicaciones de una carpeta de Selecciones y arma un único Excel.</p>
+                        <div class="o_lqa_prc__row">
+                            <select t-model="state.selectedFolderId" class="o_lqa_prc__select">
+                                <option value="">Elegir carpeta</option>
+                                <t t-foreach="state.selectionFolders" t-as="folder" t-key="folder.id">
+                                    <option t-att-value="folder.id">
+                                        <t t-esc="folder.name"/> · <t t-esc="formatNumber(folder.productCount)"/> publicaciones
+                                    </option>
+                                </t>
+                            </select>
+                            <button
+                                type="button"
+                                class="o_lqa_prc__btn is-primary"
+                                t-att-disabled="!state.selectedFolderId or state.startingFolderImport or isFolderImportRunning"
+                                t-on-click="startFolderImport"
+                            >
+                                <i t-if="state.startingFolderImport" class="o_lqa_prc__spinner"/>
+                                <span>Procesar carpeta</span>
+                            </button>
+                        </div>
+                        <div t-if="state.folderImport" class="o_lqa_prc__folderjob">
+                            <div class="o_lqa_prc__folderhead">
                                 <div>
                                     <strong t-esc="state.folderImport.folderName"/>
-                                    <span t-esc="stateLabel(state.folderImport.pricingState)"/>
+                                    <span t-att-class="'o_lqa_prc__state is-' + state.folderImport.pricingState" t-esc="stateLabel(state.folderImport.pricingState)"/>
                                 </div>
-                            </div>
-                            <div class="o_lqa_meli_pricing_import_actions">
-                                <button
-                                    t-if="state.folderImport.failedJobs"
-                                    type="button"
-                                    class="btn btn-secondary"
-                                    t-att-disabled="state.retryingFolderImport"
-                                    t-on-click="retryFolderImport"
-                                >
-                                    <i class="fa fa-refresh"/>
-                                    <t t-if="state.retryingFolderImport">Reintentando...</t>
-                                    <t t-else="">Reintentar errores</t>
-                                </button>
-                                <button
-                                    t-if="state.folderImport.canExport &amp;&amp; ['idle', 'failed'].includes(state.folderImport.exportState)"
-                                    type="button"
-                                    class="btn btn-primary"
-                                    t-att-disabled="state.generatingFolderExcel"
-                                    t-on-click="generateFolderExcel"
-                                >
-                                    <i class="fa fa-file-excel-o"/>
-                                    <t t-if="state.generatingFolderExcel">Preparando...</t>
-                                    <t t-else="">Generar Excel único</t>
-                                </button>
-                                <button
-                                    t-elif="['queued', 'running'].includes(state.folderImport.exportState)"
-                                    type="button"
-                                    class="btn btn-secondary"
-                                    disabled="disabled"
-                                >
-                                    <i class="fa fa-circle-o-notch fa-spin"/> Generando Excel...
-                                </button>
-                                <button
-                                    t-elif="state.folderImport.exportState === 'done'"
-                                    type="button"
-                                    class="btn btn-primary"
-                                    t-on-click="downloadFolderExcel"
-                                >
-                                    <i class="fa fa-download"/> Descargar Excel consolidado
-                                </button>
-                            </div>
-                        </div>
-                        <div class="o_lqa_meli_pricing_import_kpis">
-                            <article><small>Publicaciones</small><strong t-esc="formatNumber(state.folderImport.valid)"/></article>
-                            <article><small>Procesadas</small><strong t-esc="formatNumber(state.folderImport.success)"/></article>
-                            <article><small>En proceso</small><strong t-esc="formatNumber(state.folderImport.pendingJobs)"/></article>
-                            <article class="is-error"><small>Con error</small><strong t-esc="formatNumber(state.folderImport.failed)"/></article>
-                        </div>
-                        <div class="o_lqa_meli_pricing_import_progress_label">
-                            <span>Avance del procesamiento</span>
-                            <strong><t t-esc="folderPricingProgress"/>%</strong>
-                        </div>
-                        <div class="o_lqa_meli_pricing_import_track">
-                            <span t-att-style="'width:' + folderPricingProgress + '%'"/>
-                        </div>
-                        <small t-if="state.folderImport.error" class="o_lqa_meli_pricing_import_error" t-esc="state.folderImport.error"/>
-                        <small t-if="state.folderImport.exportError" class="o_lqa_meli_pricing_import_error" t-esc="state.folderImport.exportError"/>
-                    </div>
-                </article>
-
-                <article class="o_lqa_meli_pricing_input">
-                    <div class="o_lqa_meli_pricing_section_head">
-                        <div>
-                            <h2>Cargar CSV</h2>
-                            <span>Hasta 5.000 filas. Columnas: mla, sku, tipo_publicacion, precio, categoria.</span>
-                        </div>
-                        <span t-if="state.csvName" class="o_lqa_meli_pricing_file">
-                            <i class="fa fa-file-text-o"/>
-                            <t t-esc="state.csvName"/>
-                        </span>
-                    </div>
-
-                    <div class="o_lqa_meli_pricing_upload">
-                        <label class="btn btn-secondary">
-                            <i class="fa fa-upload"/>
-                            Seleccionar CSV
-                            <input
-                                type="file"
-                                accept=".csv,text/csv,text/plain"
-                                t-on-change="onCsvSelected"
-                            />
-                        </label>
-                        <button
-                            type="button"
-                            class="btn btn-secondary"
-                            t-att-disabled="!state.csvContent"
-                            t-on-click="clearCsv"
-                        >
-                            Limpiar
-                        </button>
-                        <button
-                            type="button"
-                            class="btn btn-primary"
-                            t-att-disabled="!state.csvContent || state.creatingCsv"
-                            t-on-click="submitCsv"
-                        >
-                            <t t-if="state.creatingCsv">Creando...</t>
-                            <t t-else="">Procesar CSV</t>
-                        </button>
-                    </div>
-                </article>
-
-                <article class="o_lqa_meli_pricing_input">
-                    <div class="o_lqa_meli_pricing_section_head">
-                        <div>
-                            <h2>Carga manual</h2>
-                            <span>CSV con encabezados o JSON array.</span>
-                        </div>
-                    </div>
-                    <textarea
-                        class="form-control"
-                        rows="8"
-                        t-model="state.manualText"
-                    />
-                    <div class="o_lqa_meli_pricing_input_actions">
-                        <button
-                            type="button"
-                            class="btn btn-primary"
-                            t-att-disabled="state.creatingManual"
-                            t-on-click="submitManual"
-                        >
-                            <t t-if="state.creatingManual">Creando...</t>
-                            <t t-else="">Procesar manual</t>
-                        </button>
-                    </div>
-                </article>
-            </section>
-
-            <section class="o_lqa_meli_pricing_jobs">
-                <aside class="o_lqa_meli_pricing_jobs__list">
-                    <div class="o_lqa_meli_pricing_section_head">
-                        <div>
-                            <h2>Procesos individuales</h2>
-                            <span>
-                                <t t-esc="formatNumber(state.jobs.length)"/>
-                                recientes
-                            </span>
-                        </div>
-                        <button
-                            type="button"
-                            class="btn btn-secondary"
-                            t-on-click="() => this.loadJobs()"
-                        >
-                            <i class="fa fa-refresh"/>
-                        </button>
-                    </div>
-
-                    <div t-if="state.loadingJobs" class="o_lqa_meli_pricing_empty">
-                        Cargando jobs...
-                    </div>
-                    <div t-elif="!state.jobs.length" class="o_lqa_meli_pricing_empty">
-                        Todavía no hay cargas CSV o manuales.
-                    </div>
-                    <div t-else="" class="o_lqa_meli_pricing_job_list">
-                        <button
-                            type="button"
-                            t-foreach="state.jobs"
-                            t-as="job"
-                            t-key="job.id"
-                            t-att-class="isSelectedJob(job) ? 'is-active' : ''"
-                            t-on-click="() => this.loadJob(job.id)"
-                        >
-                            <div>
-                                <strong t-esc="job.name"/>
-                                <span
-                                    t-att-class="'o_lqa_meli_pricing_status is-' + job.state"
-                                    t-esc="stateLabel(job.state)"
-                                />
-                            </div>
-                            <small>
-                                <t t-esc="formatNumber(job.inputCount)"/>
-                                filas -
-                                <t t-esc="formatDateTime(job.createdAt)"/>
-                            </small>
-                        </button>
-                    </div>
-                </aside>
-
-                <article class="o_lqa_meli_pricing_detail">
-                    <div t-if="!state.selectedJob" class="o_lqa_meli_pricing_empty is-large">
-                        Selecciona un job para ver el resultado.
-                    </div>
-                    <t t-else="">
-                        <div class="o_lqa_meli_pricing_detail__head">
-                            <div>
-                                <p>Job #<t t-esc="state.selectedJob.id"/></p>
-                                <h2 t-esc="state.selectedJob.name"/>
-                                <span>
-                                    Creado por
-                                    <strong t-esc="state.selectedJob.userName"/>
-                                    -
-                                    <strong t-esc="formatDateTime(state.selectedJob.createdAt)"/>
-                                </span>
-                            </div>
-                            <div class="o_lqa_meli_pricing_detail__actions">
-                                <button
-                                    t-if="state.selectedJob.state === 'failed'"
-                                    type="button"
-                                    class="btn btn-secondary"
-                                    t-att-disabled="isRetryingJob(state.selectedJob)"
-                                    t-on-click="() => this.retryJob(state.selectedJob)"
-                                >
-                                    <i class="fa fa-refresh"/>
-                                    <t t-if="isRetryingJob(state.selectedJob)">Reintentando...</t>
-                                    <t t-else="">Reintentar</t>
-                                </button>
-                                <button
-                                    type="button"
-                                    class="btn btn-primary"
-                                    t-att-disabled="!canDownload(state.selectedJob) || isDownloading(state.selectedJob)"
-                                    t-on-click="() => this.downloadJobXlsx(state.selectedJob)"
-                                >
-                                    <i class="fa fa-download"/>
-                                    <t t-if="isDownloading(state.selectedJob)">Descargando...</t>
-                                    <t t-else="">Descargar Excel</t>
-                                </button>
-                            </div>
-                        </div>
-
-                        <div class="o_lqa_meli_pricing_stats">
-                            <article>
-                                <small>Estado</small>
-                                <strong t-esc="stateLabel(state.selectedJob.state)"/>
-                            </article>
-                            <article>
-                                <small>Filas</small>
-                                <strong t-esc="formatNumber(state.selectedJob.inputCount)"/>
-                            </article>
-                            <article>
-                                <small>Listas</small>
-                                <strong t-esc="formatNumber(state.selectedJob.successCount)"/>
-                            </article>
-                            <article>
-                                <small>Errores</small>
-                                <strong t-esc="formatNumber(state.selectedJob.failedCount)"/>
-                            </article>
-                        </div>
-
-                        <div
-                            t-if="state.selectedJob.errorMessage"
-                            class="o_lqa_meli_pricing_error"
-                            t-esc="state.selectedJob.errorMessage"
-                        />
-
-                        <div t-if="state.loadingJob" class="o_lqa_meli_pricing_empty">
-                            Cargando detalle...
-                        </div>
-                        <div t-elif="!state.selectedJob.lines || !state.selectedJob.lines.length" class="o_lqa_meli_pricing_empty">
-                            Todavia no hay detalle disponible.
-                        </div>
-                        <div t-else="" class="o_lqa_meli_pricing_table_wrap">
-                            <div class="o_lqa_meli_pricing_table_toolbar">
-                                <span>
-                                    Filas <strong t-esc="formatNumber(state.selectedJob.linePagination.from)"/>–<strong t-esc="formatNumber(state.selectedJob.linePagination.to)"/>
-                                    de <strong t-esc="formatNumber(state.selectedJob.linePagination.total)"/>
-                                </span>
-                                <div>
-                                    <button type="button" class="btn btn-secondary" t-att-disabled="!state.selectedJob.linePagination.hasPrevious" t-on-click="previousJobLines">
-                                        <i class="fa fa-chevron-left"/> Anterior
-                                    </button>
-                                    <button type="button" class="btn btn-secondary" t-att-disabled="!state.selectedJob.linePagination.hasNext" t-on-click="nextJobLines">
-                                        Siguiente <i class="fa fa-chevron-right"/>
-                                    </button>
-                                </div>
-                            </div>
-                            <table class="o_lqa_meli_pricing_table">
-                                <thead>
-                                    <tr>
-                                        <th>MLA</th>
-                                        <th>SKU</th>
-                                        <th>Tipo</th>
-                                        <th>Precio venta</th>
-                                        <th>Precio sugerido</th>
-                                        <th>Profit</th>
-                                        <th>Margen</th>
-                                        <th>Estado</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr
-                                        t-foreach="state.selectedJob.lines"
-                                        t-as="line"
-                                        t-key="line.id"
+                                <div class="o_lqa_prc__actions">
+                                    <button
+                                        t-if="state.folderImport.failedJobs"
+                                        type="button"
+                                        class="o_lqa_prc__btn is-ghost is-sm"
+                                        t-att-disabled="state.retryingFolderImport"
+                                        t-on-click="retryFolderImport"
                                     >
-                                        <td>
-                                            <strong t-esc="line.mla"/>
-                                        </td>
-                                        <td t-esc="line.sku"/>
-                                        <td t-esc="line.publicationType"/>
-                                        <td t-esc="formatCurrency(line.salePrice)"/>
-                                        <td t-esc="formatCurrency(line.suggestedPrice)"/>
-                                        <td t-esc="formatCurrency(line.operatingProfit)"/>
-                                        <td t-esc="line.operatingProfitPercent || '-'"/>
-                                        <td>
-                                            <span
-                                                t-att-class="'o_lqa_meli_pricing_status is-' + line.state"
-                                                t-esc="stateLabel(line.state)"
-                                            />
-                                            <small t-if="line.errorMessage" t-esc="line.errorMessage"/>
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
+                                        <i t-if="state.retryingFolderImport" class="o_lqa_prc__spinner"/>
+                                        <i t-else="" class="fa fa-refresh"/>
+                                        <span>Reintentar errores</span>
+                                    </button>
+                                    <button
+                                        t-if="state.folderImport.canExport and ['idle', 'failed'].includes(state.folderImport.exportState)"
+                                        type="button"
+                                        class="o_lqa_prc__btn is-excel is-sm"
+                                        t-att-disabled="state.generatingFolderExcel"
+                                        t-on-click="generateFolderExcel"
+                                    >
+                                        <i t-if="state.generatingFolderExcel" class="o_lqa_prc__spinner"/>
+                                        <i t-else="" class="fa fa-file-excel-o"/>
+                                        <span>Generar Excel</span>
+                                    </button>
+                                    <span t-elif="['queued', 'running'].includes(state.folderImport.exportState)" class="o_lqa_prc__working">
+                                        <i class="o_lqa_prc__spinner"/> Armando el Excel…
+                                    </span>
+                                    <button
+                                        t-elif="state.folderImport.exportState === 'done'"
+                                        type="button"
+                                        class="o_lqa_prc__btn is-excel is-sm"
+                                        t-on-click="downloadFolderExcel"
+                                    >
+                                        <i class="fa fa-download"/>
+                                        <span>Descargar Excel</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="o_lqa_prc__minikpis">
+                                <span>Publicaciones <b t-esc="formatNumber(state.folderImport.valid)"/></span>
+                                <span>Listas <b t-esc="formatNumber(state.folderImport.success)"/></span>
+                                <span>Lotes en curso <b t-esc="formatNumber(state.folderImport.pendingJobs)"/></span>
+                                <span class="is-danger">Con error <b t-esc="formatNumber(state.folderImport.failed)"/></span>
+                                <span class="is-pct"><b t-esc="folderPricingProgress + '%'"/></span>
+                            </div>
+                            <div class="o_lqa_prc__bar"><span t-att-style="'width:' + Math.max(folderPricingProgress, 2) + '%'"/></div>
+                            <p t-if="state.folderImport.error" class="o_lqa_prc__errortext" t-esc="state.folderImport.error"/>
+                            <p t-if="state.folderImport.exportError" class="o_lqa_prc__errortext" t-esc="state.folderImport.exportError"/>
                         </div>
-                    </t>
-                </article>
-            </section>
+                    </div>
+
+                    <div t-else="" class="o_lqa_prc__pane">
+                        <p class="o_lqa_prc__hint">CSV con encabezados o un JSON array, con todos los campos. Para MLAs sueltos es más simple "Por MLA".</p>
+                        <textarea class="o_lqa_prc__code" rows="6" t-model="state.manualText"/>
+                        <div class="o_lqa_prc__row is-end">
+                            <button
+                                type="button"
+                                class="o_lqa_prc__btn is-primary"
+                                t-att-disabled="state.creatingManual"
+                                t-on-click="submitManual"
+                            >
+                                <i t-if="state.creatingManual" class="o_lqa_prc__spinner"/>
+                                <span>Calcular</span>
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Procesos -->
+                <section class="o_lqa_prc__work">
+                    <aside class="o_lqa_prc__card o_lqa_prc__jobs">
+                        <header>
+                            <strong>Procesos</strong>
+                            <button type="button" class="o_lqa_prc__iconbtn" t-on-click="() => this.loadJobs()" title="Actualizar">
+                                <i t-if="state.loadingJobs" class="o_lqa_prc__spinner"/>
+                                <i t-else="" class="fa fa-refresh"/>
+                            </button>
+                        </header>
+                        <div t-if="state.loadingJobs and !state.jobs.length" class="o_lqa_prc__joblist">
+                            <t t-foreach="[1, 2, 3]" t-as="n" t-key="n">
+                                <div class="o_lqa_prc__jobskeleton"><i class="o_lqa_prc__shimmer"/><i class="o_lqa_prc__shimmer is-sm"/></div>
+                            </t>
+                        </div>
+                        <div t-elif="!state.jobs.length" class="o_lqa_prc__empty is-sm">
+                            <i class="fa fa-calculator"/>
+                            <span>Todavía no hay procesos. Empezá pegando MLAs arriba.</span>
+                        </div>
+                        <div t-else="" class="o_lqa_prc__joblist">
+                            <t t-foreach="state.jobs" t-as="job" t-key="job.id">
+                                <button
+                                    type="button"
+                                    t-att-class="'o_lqa_prc__job' + (isSelectedJob(job) ? ' is-on' : '')"
+                                    t-on-click="() => this.selectJob(job)"
+                                >
+                                    <div class="o_lqa_prc__jobtop">
+                                        <strong t-esc="job.name"/>
+                                        <span t-att-class="'o_lqa_prc__state is-' + job.state">
+                                            <i t-if="isJobActive(job)" class="o_lqa_prc__spinner"/>
+                                            <t t-esc="stateLabel(job.state)"/>
+                                        </span>
+                                    </div>
+                                    <small>
+                                        <span class="o_lqa_prc__source" t-esc="sourceLabel(job.sourceType)"/>
+                                        <t t-esc="formatNumber(job.inputCount)"/> filas · <t t-esc="relativeTime(job.createdAt)"/>
+                                        <t t-if="job.failedCount and !isJobActive(job)"> · <b class="is-danger"><t t-esc="formatNumber(job.failedCount)"/> con error</b></t>
+                                    </small>
+                                    <div t-if="isJobActive(job)" class="o_lqa_prc__bar is-thin"><span t-att-style="'width:' + Math.max(jobListProgress(job), 3) + '%'"/></div>
+                                </button>
+                            </t>
+                        </div>
+                    </aside>
+
+                    <article class="o_lqa_prc__card o_lqa_prc__detail">
+                        <div t-if="!state.selectedJob" class="o_lqa_prc__empty">
+                            <i class="fa fa-line-chart"/>
+                            <strong>Elegí un proceso para ver el resultado</strong>
+                        </div>
+                        <t t-else="">
+                            <t t-set="job" t-value="state.selectedJob"/>
+                            <header class="o_lqa_prc__detailhead">
+                                <div>
+                                    <p>
+                                        <span class="o_lqa_prc__source" t-esc="sourceLabel(job.sourceType)"/>
+                                        #<t t-esc="job.id"/> · <t t-esc="job.userName"/> · <t t-esc="formatDateTime(job.createdAt)"/>
+                                    </p>
+                                    <h2 t-esc="job.name"/>
+                                </div>
+                                <div class="o_lqa_prc__actions">
+                                    <button
+                                        t-if="job.failedCount and !isJobActive(job)"
+                                        type="button"
+                                        class="o_lqa_prc__btn is-ghost"
+                                        t-att-disabled="isRetrying(job)"
+                                        t-on-click="() => this.retryJob(job)"
+                                    >
+                                        <i t-if="isRetrying(job)" class="o_lqa_prc__spinner"/>
+                                        <i t-else="" class="fa fa-refresh"/>
+                                        <span>Reintentar <t t-esc="formatNumber(job.failedCount)"/> con error</span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="o_lqa_prc__btn is-excel"
+                                        t-att-disabled="isJobActive(job) or isDownloading(job)"
+                                        t-on-click="() => this.downloadJobXlsx(job)"
+                                    >
+                                        <i t-if="isDownloading(job)" class="o_lqa_prc__spinner"/>
+                                        <i t-else="" class="fa fa-download"/>
+                                        <span>Excel</span>
+                                    </button>
+                                </div>
+                            </header>
+
+                            <div t-if="isJobActive(job)" class="o_lqa_prc__progress">
+                                <div>
+                                    <span>
+                                        <i class="o_lqa_prc__spinner"/>
+                                        <t t-if="job.state === 'pending'">En cola, arranca en segundos…</t>
+                                        <t t-elif="!job.processedCount and job.sourceType === 'mla'">Buscando SKU, tipo y precio en Catalog Sync…</t>
+                                        <t t-else="">Calculando: <t t-esc="formatNumber(job.processedCount)"/> de <t t-esc="formatNumber(job.inputCount)"/></t>
+                                    </span>
+                                    <b t-esc="jobProgress + '%'"/>
+                                </div>
+                                <div class="o_lqa_prc__bar"><span t-att-style="'width:' + Math.max(jobProgress, 2) + '%'"/></div>
+                            </div>
+
+                            <div t-if="job.errorMessage" class="o_lqa_prc__alert">
+                                <i class="fa fa-exclamation-triangle"/>
+                                <span t-esc="job.errorMessage"/>
+                            </div>
+
+                            <div t-if="job.summary" class="o_lqa_prc__kpis">
+                                <div>
+                                    <span>Margen promedio</span>
+                                    <strong t-att-class="job.summary.avgMargin === null ? '' : (job.summary.avgMargin > 0 ? 'is-ok' : 'is-danger')" t-esc="formatPercent(job.summary.avgMargin)"/>
+                                </div>
+                                <div>
+                                    <span>Ganancia total</span>
+                                    <strong t-att-class="job.summary.totalProfit >= 0 ? 'is-ok' : 'is-danger'" t-esc="formatCurrency(job.summary.totalProfit)"/>
+                                </div>
+                                <div>
+                                    <span>Con ganancia</span>
+                                    <strong t-esc="formatNumber(job.summary.counts.profit)"/>
+                                </div>
+                                <div>
+                                    <span>Con pérdida</span>
+                                    <strong t-att-class="job.summary.counts.loss ? 'is-danger' : ''" t-esc="formatNumber(job.summary.counts.loss)"/>
+                                </div>
+                                <div>
+                                    <span>Sin costo</span>
+                                    <strong t-att-class="job.summary.counts.nocost ? 'is-warn' : ''" t-esc="formatNumber(job.summary.counts.nocost)"/>
+                                </div>
+                                <div>
+                                    <span>Errores</span>
+                                    <strong t-att-class="job.summary.counts.failed ? 'is-danger' : ''" t-esc="formatNumber(job.summary.counts.failed)"/>
+                                </div>
+                            </div>
+
+                            <div class="o_lqa_prc__toolbar">
+                                <div class="o_lqa_prc__chips">
+                                    <t t-foreach="resultFilters" t-as="filter" t-key="filter.id">
+                                        <button
+                                            type="button"
+                                            t-att-class="(state.resultFilter === filter.id ? 'is-on ' : '') + (filter.tone ? 'tone-' + filter.tone : '')"
+                                            t-on-click="() => this.setResultFilter(filter.id)"
+                                        >
+                                            <t t-esc="filter.label"/>
+                                            <b t-esc="formatNumber(filter.count)"/>
+                                        </button>
+                                    </t>
+                                </div>
+                                <div class="o_lqa_prc__tools">
+                                    <label class="o_lqa_prc__search">
+                                        <i class="fa fa-search"/>
+                                        <input type="search" placeholder="MLA o SKU" t-att-value="state.search" t-on-input="onSearchInput"/>
+                                    </label>
+                                    <select class="o_lqa_prc__select" t-on-change="onSortChange">
+                                        <option value="" t-att-selected="!state.sort">Orden de carga</option>
+                                        <option value="margin_asc" t-att-selected="state.sort === 'margin_asc'">Menor margen</option>
+                                        <option value="margin_desc" t-att-selected="state.sort === 'margin_desc'">Mayor margen</option>
+                                        <option value="profit_desc" t-att-selected="state.sort === 'profit_desc'">Mayor ganancia</option>
+                                        <option value="profit_asc" t-att-selected="state.sort === 'profit_asc'">Mayor pérdida</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div t-if="!job.lines or !job.lines.length" class="o_lqa_prc__empty is-sm">
+                                <t t-if="state.loadingJob"><i class="o_lqa_prc__spinner"/> Cargando…</t>
+                                <t t-elif="state.search or state.resultFilter !== 'all'">No hay filas con este filtro.</t>
+                                <t t-else="">Todavía no hay resultados.</t>
+                            </div>
+                            <div t-else="" t-att-class="'o_lqa_prc__tablewrap' + (state.loadingJob ? ' is-stale' : '')">
+                                <table class="o_lqa_prc__table">
+                                    <thead>
+                                        <tr>
+                                            <th class="is-expand"/>
+                                            <th>Publicación</th>
+                                            <th>Tipo</th>
+                                            <th class="is-num">Precio venta</th>
+                                            <th class="is-num">Costos</th>
+                                            <th class="is-num">Ganancia</th>
+                                            <th class="is-num">Margen</th>
+                                            <th class="is-num">Precio sugerido</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <t t-foreach="job.lines" t-as="line" t-key="line.id">
+                                            <tr
+                                                t-att-class="(state.expandedLineId === line.id ? 'is-open' : '') + (line.state === 'failed' ? ' is-failed' : '')"
+                                                t-on-click="() => this.toggleLine(line)"
+                                            >
+                                                <td class="is-expand">
+                                                    <span t-att-class="'o_lqa_prc__chev' + (state.expandedLineId === line.id ? ' is-open' : '')">
+                                                        <i class="fa fa-chevron-right"/>
+                                                    </span>
+                                                </td>
+                                                <td class="is-pub">
+                                                    <div>
+                                                        <a
+                                                            t-att-href="mlaUrl(line.mla)"
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            t-on-click.stop="noop"
+                                                            t-esc="line.mla"
+                                                        />
+                                                        <small t-esc="line.sku || 'Sin SKU'"/>
+                                                    </div>
+                                                </td>
+                                                <td t-esc="listingLabel(line.publicationType)"/>
+                                                <t t-if="line.state === 'done' and !line.noCost">
+                                                    <td class="is-num" t-esc="formatCurrency(line.salePrice)"/>
+                                                    <td class="is-num is-muted" t-esc="formatCurrency(line.totalCosts)"/>
+                                                    <td t-att-class="'is-num is-strong ' + (line.operatingProfit > 0 ? 'is-ok' : 'is-danger')" t-esc="formatCurrency(line.operatingProfit)"/>
+                                                    <td class="is-num">
+                                                        <span t-att-class="'o_lqa_prc__margin ' + marginTone(line)" t-esc="formatPercent(line.marginValue)"/>
+                                                    </td>
+                                                    <td class="is-num">
+                                                        <span class="o_lqa_prc__suggest">
+                                                            <t t-esc="formatCurrency(line.suggestedPrice)"/>
+                                                            <button
+                                                                t-if="line.suggestedPrice"
+                                                                type="button"
+                                                                t-on-click.stop="() => this.copyText(Math.round(line.suggestedPrice), 'Precio sugerido')"
+                                                                title="Copiar"
+                                                            >
+                                                                <i class="fa fa-copy"/>
+                                                            </button>
+                                                        </span>
+                                                    </td>
+                                                </t>
+                                                <t t-elif="line.state === 'done'">
+                                                    <td class="is-num" t-esc="formatCurrency(line.salePrice)"/>
+                                                    <td colspan="4" class="is-note is-warn">
+                                                        <i class="fa fa-exclamation-triangle"/> Sin costo: la API de pricing no tiene datos de este SKU.
+                                                    </td>
+                                                </t>
+                                                <t t-elif="line.state === 'failed'">
+                                                    <td class="is-num" t-esc="line.salePrice ? formatCurrency(line.salePrice) : '—'"/>
+                                                    <td colspan="4" class="is-note is-danger">
+                                                        <i class="fa fa-times-circle"/> <t t-esc="line.errorMessage or 'Error'"/>
+                                                    </td>
+                                                </t>
+                                                <t t-else="">
+                                                    <td class="is-num">—</td>
+                                                    <td colspan="4" class="is-note"><i class="o_lqa_prc__spinner"/> En cola</td>
+                                                </t>
+                                            </tr>
+                                            <tr t-if="state.expandedLineId === line.id" class="o_lqa_prc__detailrow">
+                                                <td colspan="8">
+                                                    <div class="o_lqa_prc__breakdown">
+                                                        <div class="o_lqa_prc__bdmain">
+                                                            <h4>Composición del precio</h4>
+                                                            <t t-if="line.breakdown and line.breakdown.rows.length">
+                                                                <t t-foreach="line.breakdown.rows" t-as="row" t-key="row.label">
+                                                                    <div t-att-class="'o_lqa_prc__bdrow is-' + row.kind">
+                                                                        <span t-esc="row.label"/>
+                                                                        <b t-esc="breakdownValue(row)"/>
+                                                                    </div>
+                                                                </t>
+                                                            </t>
+                                                            <p t-else="" class="o_lqa_prc__muted">Sin detalle de costos para esta fila.</p>
+                                                        </div>
+                                                        <div class="o_lqa_prc__bdside">
+                                                            <h4>Datos</h4>
+                                                            <div class="o_lqa_prc__bdrow"><span>MLA</span><b t-esc="line.mla"/></div>
+                                                            <div class="o_lqa_prc__bdrow"><span>SKU</span><b t-esc="line.sku || '—'"/></div>
+                                                            <div class="o_lqa_prc__bdrow"><span>Categoría</span><b t-esc="line.categoryId || '—'"/></div>
+                                                            <div class="o_lqa_prc__bdrow"><span>Tipo</span><b t-esc="listingLabel(line.publicationType)"/></div>
+                                                            <div t-if="line.meliContributionPercentage" class="o_lqa_prc__bdrow"><span>Aporte ML</span><b><t t-esc="line.meliContributionPercentage"/>%</b></div>
+                                                            <t t-if="line.breakdown">
+                                                                <t t-foreach="line.breakdown.facts" t-as="fact" t-key="fact.label">
+                                                                    <div class="o_lqa_prc__bdrow"><span t-esc="fact.label"/><b t-esc="fact.value"/></div>
+                                                                </t>
+                                                            </t>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        </t>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <nav t-if="job.linePagination and job.linePagination.total > job.linePagination.limit" class="o_lqa_prc__pager">
+                                <button type="button" class="o_lqa_prc__btn is-ghost is-sm" t-att-disabled="!job.linePagination.hasPrevious or state.loadingJob" t-on-click="previousLines">
+                                    <i class="fa fa-chevron-left"/> Anterior
+                                </button>
+                                <span>
+                                    <t t-esc="formatNumber(job.linePagination.from)"/>–<t t-esc="formatNumber(job.linePagination.to)"/>
+                                    de <t t-esc="formatNumber(job.linePagination.total)"/>
+                                </span>
+                                <button type="button" class="o_lqa_prc__btn is-ghost is-sm" t-att-disabled="!job.linePagination.hasNext or state.loadingJob" t-on-click="nextLines">
+                                    Siguiente <i class="fa fa-chevron-right"/>
+                                </button>
+                            </nav>
+                        </t>
+                    </article>
+                </section>
+            </div>
         </div>
     </t>
 </templates>
