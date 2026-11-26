@@ -6,6 +6,7 @@ import logging
 import os
 import posixpath
 import re
+import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, wait
 from urllib.parse import quote
@@ -48,8 +49,11 @@ class LqaRetailersPublisherService(models.AbstractModel):
     MAX_IMPORT_ROWS = 10000
     # Los datos de cada producto de la carpeta (titulo, foto, precio...) salen
     # de Catalog Sync: madre solo guarda MLA + SKU. Una consulta por MLA tarda
-    # ~0,7 s, asi que se piden en paralelo.
-    CATALOG_ENRICH_CONCURRENCY = 16
+    # ~0,7 s, asi que se piden en paralelo. Pocos hilos y con pila chica: el
+    # worker de Odoo tiene limitada la memoria virtual y con 16 hilos de pila
+    # normal (8 MB cada uno) ya no puede crear mas ("can't start new thread").
+    CATALOG_ENRICH_CONCURRENCY = 8
+    CATALOG_ENRICH_STACK_BYTES = 1024 * 1024
     CATALOG_ENRICH_TIMEOUT = 15
     MAX_UPLOAD_BYTES = 20 * 1024 * 1024
     MAX_XLSX_XML_BYTES = 40 * 1024 * 1024
@@ -1073,10 +1077,22 @@ class LqaRetailersPublisherService(models.AbstractModel):
                 return item_id, None
             return item_id, rows[0] if rows and isinstance(rows[0], dict) else None
 
-        with ThreadPoolExecutor(
-            max_workers=min(self.CATALOG_ENRICH_CONCURRENCY, len(item_ids))
-        ) as executor:
-            found = dict(executor.map(fetch, item_ids))
+        found = {}
+        previous_stack = threading.stack_size()
+        try:
+            threading.stack_size(self.CATALOG_ENRICH_STACK_BYTES)
+            with ThreadPoolExecutor(
+                max_workers=min(self.CATALOG_ENRICH_CONCURRENCY, len(item_ids))
+            ) as executor:
+                found = dict(executor.map(fetch, item_ids))
+        except RuntimeError:
+            # Sin hilos disponibles: se sigue de a uno antes que romper la vista.
+            _logger.warning("Sin hilos para completar la carpeta: consulta secuencial")
+            for item_id in item_ids:
+                if item_id not in found:
+                    found[item_id] = fetch(item_id)[1]
+        finally:
+            threading.stack_size(previous_stack)
 
         missing = 0
         for product in products:
