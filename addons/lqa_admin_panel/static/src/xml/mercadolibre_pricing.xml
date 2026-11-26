@@ -441,7 +441,9 @@
                                                 <t t-elif="line.state === 'done'">
                                                     <td class="is-num" t-esc="formatCurrency(line.salePrice)"/>
                                                     <td colspan="4" class="is-note is-warn">
-                                                        <i class="fa fa-exclamation-triangle"/> Sin costo: la API de pricing no tiene datos de este SKU.
+                                                        <i class="fa fa-exclamation-triangle"/>
+                                                        <t t-if="line.unresolved">No se pudo calcular: la API de pricing no consiguió la comisión de MercadoLibre.</t>
+                                                        <t t-else="">Sin costo: la API de pricing no tiene datos de este SKU.</t>
                                                     </td>
                                                 </t>
                                                 <t t-elif="line.state === 'failed'">

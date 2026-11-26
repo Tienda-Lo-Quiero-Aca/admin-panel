@@ -230,6 +230,9 @@ class LqaMercadolibrePricingItem(models.Model):
             # La API responde todo en cero cuando no tiene el costo del SKU:
             # no es "Listo", es "sin costo".
             "noCost": bool(self.no_cost),
+            # price-api marca asi lo que no pudo calcular (hoy: cuando no
+            # consigue la comision de MercadoLibre de la publicacion).
+            "unresolved": bool(response.get("unresolved")),
             "breakdown": self._breakdown(response) if self.state == "done" else None,
             "errorMessage": self.error_message or "",
         }
