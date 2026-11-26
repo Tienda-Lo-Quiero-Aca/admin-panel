@@ -85,8 +85,10 @@ export class LqaMercadolibrePricing extends Component {
     setup() {
         this.notification = useService("notification");
         this.orm = useService("orm");
+        // Selecciones abre esta vista con una carpeta ya elegida.
+        const contextFolderId = String(this.props.action?.context?.lqa_pricing_folder_id || "");
         this.state = useState({
-            tab: "mla",
+            tab: contextFolderId ? "folder" : "mla",
             // Por MLA
             mlaText: "",
             mlaName: "",
@@ -101,7 +103,7 @@ export class LqaMercadolibrePricing extends Component {
             creatingManual: false,
             // Carpeta
             selectionFolders: [],
-            selectedFolderId: "",
+            selectedFolderId: contextFolderId,
             folderImport: null,
             startingFolderImport: false,
             generatingFolderExcel: false,

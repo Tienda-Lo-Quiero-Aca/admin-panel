@@ -1,51 +1,68 @@
 /** @odoo-module **/
 
-import { Component, onMounted, onWillStart, onWillUnmount, useState } from "@odoo/owl";
+import { Component, onWillStart, onWillUnmount, useState } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 
 const CSV_COLUMNS = [
-    { key: "item_id", label: "MLA" },
-    { key: "title", label: "Titulo" },
-    { key: "sku", label: "SKU" },
-    { key: "brand", label: "Marca" },
-    { key: "status", label: "Estado" },
-    { key: "condition", label: "Condicion" },
-    { key: "listing_type_id", label: "Tipo publicacion" },
-    { key: "price", label: "Precio" },
-    { key: "currency_id", label: "Moneda" },
-    { key: "available_quantity", label: "Stock" },
-    { key: "revenue", label: "Facturacion" },
-    { key: "orders_count", label: "Ordenes" },
-    { key: "units_sold", label: "Unidades vendidas" },
-    { key: "total_visits", label: "Visitas" },
-    { key: "order_conversion_rate", label: "Conversion ordenes" },
-    { key: "category_id", label: "Categoria" },
-    { key: "domain_id", label: "Dominio" },
-    { key: "permalink", label: "Link publicacion" },
-    { key: "date_created", label: "Fecha creacion" },
-    { key: "last_updated", label: "Ultima actualizacion" },
-    { key: "catalog_sold_quantity", label: "Ventas catalogo" },
-    { key: "avg_ticket", label: "Ticket promedio" },
-    { key: "first_order_date", label: "Primera orden" },
-    { key: "last_order_date", label: "Ultima orden" },
-    { key: "unit_conversion_rate", label: "Conversion unidades" },
+    { key: "item_id", label: "MLA", group: "Publicación" },
+    { key: "title", label: "Título", group: "Publicación" },
+    { key: "sku", label: "SKU", group: "Publicación" },
+    { key: "brand", label: "Marca", group: "Publicación" },
+    { key: "status", label: "Estado", group: "Publicación" },
+    { key: "condition", label: "Condición", group: "Publicación" },
+    { key: "listing_type_id", label: "Tipo de publicación", group: "Publicación" },
+    { key: "category_id", label: "Categoría", group: "Publicación" },
+    { key: "domain_id", label: "Dominio", group: "Publicación" },
+    { key: "permalink", label: "Link", group: "Publicación" },
+    { key: "price", label: "Precio", group: "Precio y stock" },
+    { key: "currency_id", label: "Moneda", group: "Precio y stock" },
+    { key: "available_quantity", label: "Stock", group: "Precio y stock" },
+    { key: "revenue", label: "Facturación", group: "Rendimiento" },
+    { key: "orders_count", label: "Órdenes", group: "Rendimiento" },
+    { key: "units_sold", label: "Unidades vendidas", group: "Rendimiento" },
+    { key: "total_visits", label: "Visitas", group: "Rendimiento" },
+    { key: "order_conversion_rate", label: "Conversión de órdenes", group: "Rendimiento" },
+    { key: "unit_conversion_rate", label: "Conversión de unidades", group: "Rendimiento" },
+    { key: "avg_ticket", label: "Ticket promedio", group: "Rendimiento" },
+    { key: "catalog_sold_quantity", label: "Ventas de catálogo", group: "Rendimiento" },
+    { key: "date_created", label: "Fecha de creación", group: "Fechas" },
+    { key: "last_updated", label: "Última actualización", group: "Fechas" },
+    { key: "first_order_date", label: "Primera orden", group: "Fechas" },
+    { key: "last_order_date", label: "Última orden", group: "Fechas" },
+];
+const COLUMN_GROUPS = ["Publicación", "Precio y stock", "Rendimiento", "Fechas"];
+const PRESETS = {
+    basic: [
+        "item_id", "title", "sku", "status", "listing_type_id",
+        "price", "available_quantity", "category_id", "permalink",
+    ],
+    performance: [
+        "item_id", "title", "sku", "brand", "status", "price", "available_quantity",
+        "revenue", "orders_count", "units_sold", "total_visits", "order_conversion_rate",
+    ],
+};
+const PAGE_SIZE = 50;
+
+const STATUS_FILTERS = [
+    { id: "", label: "Todas", key: "all" },
+    { id: "active", label: "Activas", key: "active", tone: "ok" },
+    { id: "paused", label: "Pausadas", key: "paused", tone: "warn" },
+    { id: "closed", label: "Cerradas", key: "closed" },
+    { id: "out_of_stock", label: "Sin stock", key: "out_of_stock", tone: "danger" },
+    { id: "no_data", label: "Sin datos", key: "no_data" },
 ];
 
-const DEFAULT_COLUMNS = [
-    "item_id",
-    "title",
-    "sku",
-    "status",
-    "listing_type_id",
-    "price",
-    "available_quantity",
-    "category_id",
-    "permalink",
+const SORTS = [
+    { id: "recent", label: "Más recientes" },
+    { id: "revenue", label: "Más facturación" },
+    { id: "orders", label: "Más órdenes" },
+    { id: "visits", label: "Más visitas" },
+    { id: "price_desc", label: "Mayor precio" },
+    { id: "price_asc", label: "Menor precio" },
+    { id: "stock_asc", label: "Menos stock" },
+    { id: "title", label: "Título (A-Z)" },
 ];
-
-const defaultSelectedColumns = () =>
-    Object.fromEntries(DEFAULT_COLUMNS.map((key) => [key, true]));
 
 export class LqaMercadolibreSelections extends Component {
     static template = "lqa_admin_panel.MercadolibreSelections";
@@ -53,20 +70,37 @@ export class LqaMercadolibreSelections extends Component {
     setup() {
         this.notification = useService("notification");
         this.orm = useService("orm");
-        this.importTimer = null;
+        this.action = useService("action");
         this.state = useState({
             folders: [],
-            products: [],
-            folderPagination: {},
-            // El catalogo abre esta vista con la carpeta ya elegida.
-            selectedFolderId: String(
-                this.props.action?.context?.lqa_selection_folder_id || ""
-            ),
             loadingFolders: true,
+            folderSearch: "",
+            // El catalogo abre esta vista con la carpeta ya elegida.
+            selectedFolderId: String(this.props.action?.context?.lqa_selection_folder_id || ""),
+            // Productos de la carpeta
+            products: [],
+            pagination: {},
+            summary: null,
             loadingProducts: false,
-            exportingFolderId: "",
+            search: "",
+            status: "",
+            sort: "recent",
+            offset: 0,
+            selectedIds: {},
+            removing: false,
+            confirmRemove: false,
+            // Renombrar
+            renaming: false,
+            renameValue: "",
+            savingName: false,
+            // Exportar
+            showExport: false,
+            selectedColumns: Object.fromEntries(PRESETS.basic.map((key) => [key, true])),
+            copyingMlas: false,
+            // Eliminar carpeta
             deletingFolder: null,
-            selectedColumns: defaultSelectedColumns(),
+            confirmingDelete: false,
+            // Importar
             showImportModal: false,
             importFolderName: "",
             importFilename: "",
@@ -77,55 +111,40 @@ export class LqaMercadolibreSelections extends Component {
             retryingImport: false,
         });
 
-        // Sin await: la vista se dibuja al instante con su estado de carga y los
-        // datos llegan despues. Esperarlos dejaba congelada la pantalla anterior
-        // (con el overlay de carga) hasta que respondia el servidor.
         onWillStart(() => {
             this.lqaInitialLoad = (async () => {
                 await Promise.all([this.loadFolders(), this.loadInitialImportJob()]);
             })();
         });
-        onMounted(() => {
-            this.importTimer = window.setInterval(() => this.refreshImportJob(), 5000);
-        });
+
         onWillUnmount(() => {
-            if (this.importTimer) {
-                window.clearInterval(this.importTimer);
-            }
+            clearTimeout(this.importTimer);
+            clearTimeout(this.searchTimer);
         });
     }
 
-    get csvColumns() {
-        return CSV_COLUMNS;
-    }
+    // ------------------------------------------------------------ carpetas
 
-    get selectedFolder() {
-        return this.state.folders.find(
-            (folder) => String(folder.id) === String(this.state.selectedFolderId)
+    get filteredFolders() {
+        const query = this.state.folderSearch.trim().toLowerCase();
+        if (!query) {
+            return this.state.folders;
+        }
+        return this.state.folders.filter((folder) =>
+            `${folder.name} ${folder.creatorName || ""}`.toLowerCase().includes(query)
         );
     }
 
-    get selectedColumnKeys() {
-        return CSV_COLUMNS.filter(
-            (column) => this.state.selectedColumns[column.key]
-        ).map((column) => column.key);
+    get selectedFolder() {
+        return this.state.folders.find((folder) => String(folder.id) === String(this.state.selectedFolderId));
     }
 
-    get selectedColumnCount() {
-        return this.selectedColumnKeys.length;
+    isSelectedFolder(folder) {
+        return String(folder.id) === String(this.state.selectedFolderId);
     }
 
-    async loadInitialImportJob() {
-        try {
-            const job = await this.orm.call(
-                "lqa.mercadolibre.catalog.service",
-                "get_latest_mla_file_job",
-                []
-            );
-            this.state.importJob = job || null;
-        } catch {
-            this.state.importJob = null;
-        }
+    get totalFolderProducts() {
+        return this.state.folders.reduce((total, folder) => total + Number(folder.productCount || 0), 0);
     }
 
     async loadFolders() {
@@ -136,77 +155,393 @@ export class LqaMercadolibreSelections extends Component {
                 "get_selection_folders",
                 []
             );
-            if (
-                this.state.selectedFolderId &&
-                !this.state.folders.some(
-                    (folder) => String(folder.id) === String(this.state.selectedFolderId)
-                )
-            ) {
+            if (this.state.selectedFolderId && !this.selectedFolder) {
                 this.state.selectedFolderId = "";
             }
             if (!this.state.selectedFolderId && this.state.folders.length) {
                 this.state.selectedFolderId = String(this.state.folders[0].id);
             }
-            await this.loadSelectedFolderProducts();
+            await this.loadProducts(true);
         } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudieron cargar las carpetas.",
-                { type: "danger" }
-            );
+            this.notification.add(error?.data?.message || "No se pudieron cargar las carpetas.", { type: "danger" });
         } finally {
             this.state.loadingFolders = false;
         }
     }
 
     async selectFolder(folder) {
-        this.state.selectedFolderId = String(folder.id);
-        await this.loadSelectedFolderProducts();
-    }
-
-    async loadSelectedFolderProducts() {
-        if (!this.state.selectedFolderId) {
-            this.state.products = [];
-            this.state.folderPagination = {};
+        if (this.isSelectedFolder(folder)) {
             return;
         }
+        this.state.selectedFolderId = String(folder.id);
+        this.state.search = "";
+        this.state.status = "";
+        this.state.sort = "recent";
+        this.state.offset = 0;
+        this.state.renaming = false;
+        this.state.summary = null;
+        this.clearSelection();
+        await this.loadProducts(true);
+    }
+
+    // ------------------------------------------------------------ productos
+
+    async loadProducts(withSummary = false) {
+        if (!this.state.selectedFolderId) {
+            this.state.products = [];
+            this.state.pagination = {};
+            this.state.summary = null;
+            return;
+        }
+        const folderId = this.state.selectedFolderId;
         this.state.loadingProducts = true;
         try {
             const response = await this.orm.call(
                 "lqa.mercadolibre.catalog.service",
                 "get_selection_products",
-                [Number(this.state.selectedFolderId), 1000, 0]
+                [
+                    Number(folderId),
+                    PAGE_SIZE,
+                    this.state.offset,
+                    this.state.search,
+                    this.state.status,
+                    this.state.sort,
+                    withSummary,
+                ]
             );
+            if (folderId !== this.state.selectedFolderId) {
+                return;
+            }
             this.state.products = response.products || [];
-            this.state.folderPagination = response.pagination || {};
+            this.state.pagination = response.pagination || {};
+            if (response.summary) {
+                this.state.summary = response.summary;
+            }
+            if (response.folder) {
+                this.updateFolder(response.folder);
+            }
         } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudieron cargar los productos de la carpeta.",
-                { type: "danger" }
-            );
+            this.notification.add(error?.data?.message || "No se pudieron cargar las publicaciones.", { type: "danger" });
         } finally {
             this.state.loadingProducts = false;
         }
     }
 
-    toggleColumn(columnKey) {
-        this.state.selectedColumns = {
-            ...this.state.selectedColumns,
-            [columnKey]: !this.state.selectedColumns[columnKey],
-        };
-    }
-
-    selectAllColumns() {
-        this.state.selectedColumns = Object.fromEntries(
-            CSV_COLUMNS.map((column) => [column.key, true])
+    updateFolder(folder) {
+        this.state.folders = this.state.folders.map((item) =>
+            String(item.id) === String(folder.id) ? { ...item, ...folder } : item
         );
     }
 
-    selectDefaultColumns() {
-        this.state.selectedColumns = defaultSelectedColumns();
+    onSearchInput(event) {
+        this.state.search = event.target.value;
+        clearTimeout(this.searchTimer);
+        this.searchTimer = setTimeout(() => {
+            this.state.offset = 0;
+            this.clearSelection();
+            this.loadProducts();
+        }, 350);
     }
 
-    clearColumns() {
-        this.state.selectedColumns = {};
+    async setStatus(status) {
+        this.state.status = status;
+        this.state.offset = 0;
+        this.clearSelection();
+        await this.loadProducts();
+    }
+
+    async onSortChange(event) {
+        this.state.sort = event.target.value;
+        this.state.offset = 0;
+        await this.loadProducts();
+    }
+
+    get statusFilters() {
+        const counts = this.state.summary?.counts || {};
+        return STATUS_FILTERS.map((filter) => ({ ...filter, count: counts[filter.key] })).filter(
+            (filter) => !filter.id || filter.count
+        );
+    }
+
+    get sortOptions() {
+        return SORTS;
+    }
+
+    get currentPage() {
+        return Math.floor(Number(this.state.pagination.offset || 0) / PAGE_SIZE) + 1;
+    }
+
+    get totalPages() {
+        return Math.max(Math.ceil(Number(this.state.pagination.total || 0) / PAGE_SIZE), 1);
+    }
+
+    async previousPage() {
+        if (this.state.pagination.has_previous) {
+            this.state.offset = Math.max(this.state.offset - PAGE_SIZE, 0);
+            await this.loadProducts();
+        }
+    }
+
+    async nextPage() {
+        if (this.state.pagination.has_next) {
+            this.state.offset += PAGE_SIZE;
+            await this.loadProducts();
+        }
+    }
+
+    // ------------------------------------------------------------ seleccion y quitar
+
+    get selectedCount() {
+        return Object.keys(this.state.selectedIds).length;
+    }
+
+    isSelected(product) {
+        return Boolean(this.state.selectedIds[product.id]);
+    }
+
+    toggleProduct(product) {
+        const selected = { ...this.state.selectedIds };
+        if (selected[product.id]) {
+            delete selected[product.id];
+        } else {
+            selected[product.id] = true;
+        }
+        this.state.selectedIds = selected;
+    }
+
+    get allPageSelected() {
+        return this.state.products.length > 0 && this.state.products.every((product) => this.isSelected(product));
+    }
+
+    togglePage() {
+        const selected = { ...this.state.selectedIds };
+        const select = !this.allPageSelected;
+        for (const product of this.state.products) {
+            if (select) {
+                selected[product.id] = true;
+            } else {
+                delete selected[product.id];
+            }
+        }
+        this.state.selectedIds = selected;
+    }
+
+    clearSelection() {
+        this.state.selectedIds = {};
+        this.state.confirmRemove = false;
+    }
+
+    async removeSelected() {
+        if (!this.selectedCount || this.state.removing) {
+            return;
+        }
+        if (!this.state.confirmRemove) {
+            this.state.confirmRemove = true;
+            return;
+        }
+        this.state.removing = true;
+        try {
+            const result = await this.orm.call(
+                "lqa.mercadolibre.catalog.service",
+                "remove_selection_products",
+                [Number(this.state.selectedFolderId), Object.keys(this.state.selectedIds).map(Number)]
+            );
+            this.updateFolder(result);
+            this.notification.add(
+                `${this.formatNumber(result.removed)} publicaciones quitadas de la carpeta.`,
+                { type: "success" }
+            );
+            this.clearSelection();
+            await this.loadProducts(true);
+        } catch (error) {
+            this.notification.add(error?.data?.message || "No se pudieron quitar.", { type: "danger" });
+        } finally {
+            this.state.removing = false;
+        }
+    }
+
+    // ------------------------------------------------------------ renombrar
+
+    startRename() {
+        this.state.renameValue = this.selectedFolder?.name || "";
+        this.state.renaming = true;
+    }
+
+    cancelRename() {
+        this.state.renaming = false;
+    }
+
+    onRenameKeydown(event) {
+        if (event.key === "Enter") {
+            this.saveRename();
+        } else if (event.key === "Escape") {
+            this.cancelRename();
+        }
+    }
+
+    async saveRename() {
+        const name = this.state.renameValue.trim();
+        if (!name || name === this.selectedFolder?.name) {
+            this.cancelRename();
+            return;
+        }
+        this.state.savingName = true;
+        try {
+            const folder = await this.orm.call(
+                "lqa.mercadolibre.catalog.service",
+                "rename_selection_folder",
+                [Number(this.state.selectedFolderId), name]
+            );
+            this.updateFolder(folder);
+            this.state.renaming = false;
+            this.notification.add("Carpeta renombrada.", { type: "success" });
+        } catch (error) {
+            this.notification.add(error?.data?.message || "No se pudo renombrar.", { type: "danger" });
+        } finally {
+            this.state.savingName = false;
+        }
+    }
+
+    // ------------------------------------------------------------ acciones de carpeta
+
+    openPricing() {
+        this.action.doAction("lqa_admin_panel.action_lqa_mercadolibre_pricing", {
+            additionalContext: { lqa_pricing_folder_id: this.state.selectedFolderId },
+        });
+    }
+
+    async copyMlas() {
+        this.state.copyingMlas = true;
+        try {
+            const mlas = await this.orm.call(
+                "lqa.mercadolibre.catalog.service",
+                "get_selection_folder_mlas",
+                [Number(this.state.selectedFolderId)]
+            );
+            await navigator.clipboard.writeText(mlas.join("\n"));
+            this.notification.add(`${this.formatNumber(mlas.length)} MLAs copiados, uno por línea.`, { type: "success" });
+        } catch (error) {
+            this.notification.add(error?.data?.message || "No se pudieron copiar los MLAs.", { type: "danger" });
+        } finally {
+            this.state.copyingMlas = false;
+        }
+    }
+
+    get columnGroups() {
+        return COLUMN_GROUPS.map((group) => ({
+            group,
+            columns: CSV_COLUMNS.filter((column) => column.group === group),
+        }));
+    }
+
+    get selectedColumnKeys() {
+        return CSV_COLUMNS.filter((column) => this.state.selectedColumns[column.key]).map((column) => column.key);
+    }
+
+    toggleColumn(key) {
+        this.state.selectedColumns = { ...this.state.selectedColumns, [key]: !this.state.selectedColumns[key] };
+    }
+
+    toggleGroup(group) {
+        const columns = CSV_COLUMNS.filter((column) => column.group === group);
+        const select = !columns.every((column) => this.state.selectedColumns[column.key]);
+        const next = { ...this.state.selectedColumns };
+        for (const column of columns) {
+            next[column.key] = select;
+        }
+        this.state.selectedColumns = next;
+    }
+
+    isGroupSelected(group) {
+        return CSV_COLUMNS.filter((column) => column.group === group).every(
+            (column) => this.state.selectedColumns[column.key]
+        );
+    }
+
+    applyPreset(preset) {
+        this.state.selectedColumns = Object.fromEntries(
+            CSV_COLUMNS.map((column) => [column.key, preset === "all" || Boolean(PRESETS[preset]?.includes(column.key))])
+        );
+    }
+
+    get activePreset() {
+        const selected = this.selectedColumnKeys;
+        if (selected.length === CSV_COLUMNS.length) {
+            return "all";
+        }
+        for (const [id, keys] of Object.entries(PRESETS)) {
+            if (keys.length === selected.length && keys.every((key) => selected.includes(key))) {
+                return id;
+            }
+        }
+        return "";
+    }
+
+    openExport() {
+        this.state.showExport = true;
+    }
+
+    closeExport() {
+        this.state.showExport = false;
+    }
+
+    downloadCsv() {
+        if (!this.selectedColumnKeys.length || !this.selectedFolder) {
+            return;
+        }
+        const params = new URLSearchParams({ columns: this.selectedColumnKeys.join(",") });
+        window.location.href = `/lqa_admin_panel/mercadolibre/selections/${encodeURIComponent(
+            this.selectedFolder.id
+        )}/csv?${params.toString()}`;
+        this.state.showExport = false;
+        this.notification.add(
+            `Descargando ${this.formatNumber(this.selectedFolder.productCount)} publicaciones. El archivo se arma por lotes y puede tardar.`,
+            { type: "info" }
+        );
+    }
+
+    openDeleteFolder() {
+        this.state.deletingFolder = this.selectedFolder;
+    }
+
+    closeDeleteFolder() {
+        if (!this.state.confirmingDelete) {
+            this.state.deletingFolder = null;
+        }
+    }
+
+    async confirmDeleteFolder() {
+        const folder = this.state.deletingFolder;
+        if (!folder) {
+            return;
+        }
+        this.state.confirmingDelete = true;
+        try {
+            await this.orm.call("lqa.mercadolibre.catalog.service", "delete_selection_folder", [folder.id]);
+            this.state.deletingFolder = null;
+            this.state.selectedFolderId = "";
+            this.notification.add(`Carpeta "${folder.name}" eliminada.`, { type: "success" });
+            await this.loadFolders();
+        } catch (error) {
+            this.notification.add(error?.data?.message || "No se pudo eliminar la carpeta.", { type: "danger" });
+        } finally {
+            this.state.confirmingDelete = false;
+        }
+    }
+
+    // ------------------------------------------------------------ importar
+
+    async loadInitialImportJob() {
+        try {
+            this.state.importJob = (await this.orm.call(
+                "lqa.mercadolibre.catalog.service",
+                "get_latest_mla_file_job",
+                []
+            )) || null;
+            this.scheduleImportPoll();
+        } catch {
+            this.state.importJob = null;
+        }
     }
 
     openImportModal() {
@@ -214,10 +549,9 @@ export class LqaMercadolibreSelections extends Component {
     }
 
     closeImportModal() {
-        if (this.state.importingFile) {
-            return;
+        if (!this.state.importingFile) {
+            this.state.showImportModal = false;
         }
-        this.state.showImportModal = false;
     }
 
     async onImportFileSelected(event) {
@@ -228,27 +562,23 @@ export class LqaMercadolibreSelections extends Component {
         }
         const extension = file.name.split(".").pop()?.toLowerCase();
         if (!["csv", "xlsx"].includes(extension)) {
-            this.notification.add("El archivo debe ser CSV o XLSX.", { type: "warning" });
+            this.notification.add("El archivo tiene que ser CSV o Excel (.xlsx).", { type: "warning" });
             return;
         }
         if (file.size > 20 * 1024 * 1024) {
-            this.notification.add("El archivo puede pesar como máximo 20 MB.", { type: "warning" });
+            this.notification.add("El archivo puede pesar hasta 20 MB.", { type: "warning" });
             return;
         }
         this.state.importFilename = file.name;
-        this.state.importContent = await this.fileToBase64(file);
-        if (!this.state.importFolderName) {
-            this.state.importFolderName = file.name.replace(/\.(csv|xlsx)$/i, "");
-        }
-    }
-
-    fileToBase64(file) {
-        return new Promise((resolve, reject) => {
+        this.state.importContent = await new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = () => resolve(String(reader.result || "").split(",")[1] || "");
             reader.onerror = reject;
             reader.readAsDataURL(file);
         });
+        if (!this.state.importFolderName) {
+            this.state.importFolderName = file.name.replace(/\.(csv|xlsx)$/i, "");
+        }
     }
 
     clearImportFile() {
@@ -257,12 +587,7 @@ export class LqaMercadolibreSelections extends Component {
     }
 
     async submitMlaImport() {
-        if (!String(this.state.importFolderName || "").trim()) {
-            this.notification.add("Ingresá un nombre para la carpeta.", { type: "warning" });
-            return;
-        }
-        if (!this.state.importContent) {
-            this.notification.add("Seleccioná un archivo CSV o XLSX.", { type: "warning" });
+        if (!this.state.importFolderName.trim() || !this.state.importContent) {
             return;
         }
         this.state.importingFile = true;
@@ -270,11 +595,7 @@ export class LqaMercadolibreSelections extends Component {
             const result = await this.orm.call(
                 "lqa.mercadolibre.catalog.service",
                 "import_mla_file_to_folder",
-                [
-                    this.state.importFolderName,
-                    this.state.importFilename,
-                    this.state.importContent,
-                ]
+                [this.state.importFolderName, this.state.importFilename, this.state.importContent]
             );
             this.state.importJob = result.job;
             this.state.selectedFolderId = String(result.folder.id);
@@ -282,15 +603,13 @@ export class LqaMercadolibreSelections extends Component {
             this.state.importFolderName = "";
             this.clearImportFile();
             await this.loadFolders();
+            this.scheduleImportPoll();
             this.notification.add(
-                `Carpeta creada. Se están procesando ${this.formatNumber(result.job.matched)} MLAs.`,
+                `Carpeta creada. Importando ${this.formatNumber(result.job.matched)} MLAs.`,
                 { type: "success" }
             );
         } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudo importar el archivo.",
-                { type: "danger" }
-            );
+            this.notification.add(error?.data?.message || "No se pudo importar el archivo.", { type: "danger" });
         } finally {
             this.state.importingFile = false;
         }
@@ -301,50 +620,15 @@ export class LqaMercadolibreSelections extends Component {
     }
 
     get importPhaseLabel() {
-        const job = this.state.importJob;
-        if (!job) {
-            return "";
-        }
-        return {
-            saving: "Guardando MLAs en la carpeta",
-            enriching: "Completando datos desde Catalog API",
-            done: "Importación completa",
-            failed: "La importación falló",
-            cancelled: "Importación cancelada",
-        }[job.phase] || "Procesando";
-    }
-
-    async refreshImportJob() {
-        const job = this.state.importJob;
-        if (!job?.id || !this.importIsActive) {
-            return;
-        }
-        try {
-            const updated = await this.orm.call(
-                "lqa.mercadolibre.catalog.service",
-                "get_selection_job",
-                [job.id]
-            );
-            const finished = ["done", "failed", "cancelled"].includes(updated.state);
-            this.state.importJob = updated;
-            this.state.folders = this.state.folders.map((folder) =>
-                String(folder.id) === String(updated.folderId)
-                    ? { ...folder, productCount: Number(updated.folderCount || 0) }
-                    : folder
-            );
-            if (finished) {
-                await this.loadFolders();
-                if (updated.state === "done") {
-                    this.notification.add("La carpeta terminó de importar los MLAs.", {
-                        type: "success",
-                    });
-                }
-            } else if (String(updated.folderId) === String(this.state.selectedFolderId)) {
-                await this.loadSelectedFolderProducts();
-            }
-        } catch {
-            // El siguiente ciclo volverá a consultar el estado.
-        }
+        return (
+            {
+                saving: "Guardando los MLAs en la carpeta",
+                enriching: "Completando datos desde Catalog Sync",
+                done: "Importación completa",
+                failed: "La importación se detuvo",
+                cancelled: "Importación cancelada",
+            }[this.state.importJob?.phase] || "Procesando"
+        );
     }
 
     get importProgress() {
@@ -353,18 +637,48 @@ export class LqaMercadolibreSelections extends Component {
         if (!total) {
             return 0;
         }
-        // La barra sigue la fase en curso: primero el guardado, despues el
-        // enriquecimiento. Asi deja de quedarse en 0% mientras la carpeta ya
-        // se esta llenando.
-        const done =
-            job?.phase === "saving"
-                ? Number(job?.saved || 0)
-                : Number(job?.processed || 0);
+        const done = job?.phase === "saving" ? Number(job?.saved || 0) : Number(job?.processed || 0);
         return Math.min(Math.round((done / total) * 100), 100);
     }
 
-    get importSavedCount() {
-        return Number(this.state.importJob?.saved || 0);
+    scheduleImportPoll() {
+        clearTimeout(this.importTimer);
+        if (this.importIsActive) {
+            this.importTimer = setTimeout(() => this.refreshImportJob(), 3000);
+        }
+    }
+
+    async refreshImportJob() {
+        const job = this.state.importJob;
+        if (!job?.id) {
+            return;
+        }
+        try {
+            const updated = await this.orm.silent.call(
+                "lqa.mercadolibre.catalog.service",
+                "get_selection_job",
+                [job.id]
+            );
+            this.state.importJob = updated;
+            this.state.folders = this.state.folders.map((folder) =>
+                String(folder.id) === String(updated.folderId)
+                    ? { ...folder, productCount: Number(updated.folderCount || 0) }
+                    : folder
+            );
+            if (["done", "failed", "cancelled"].includes(updated.state)) {
+                if (updated.state === "done") {
+                    this.notification.add(`"${updated.folderName}" terminó de importar.`, { type: "success" });
+                }
+                if (String(updated.folderId) === String(this.state.selectedFolderId)) {
+                    await this.loadProducts(true);
+                }
+            } else if (String(updated.folderId) === String(this.state.selectedFolderId) && !this.state.loadingProducts) {
+                await this.loadProducts(true);
+            }
+        } catch {
+            // El proximo ciclo vuelve a consultar.
+        }
+        this.scheduleImportPoll();
     }
 
     async cancelImport() {
@@ -380,15 +694,9 @@ export class LqaMercadolibreSelections extends Component {
                 [job.id]
             );
             await this.loadFolders();
-            this.notification.add(
-                "Importación cancelada. Los MLAs ya guardados quedan en la carpeta.",
-                { type: "info" }
-            );
+            this.notification.add("Importación cancelada. Los MLAs ya guardados quedan en la carpeta.", { type: "info" });
         } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudo cancelar la importación.",
-                { type: "danger" }
-            );
+            this.notification.add(error?.data?.message || "No se pudo cancelar.", { type: "danger" });
         } finally {
             this.state.cancellingImport = false;
         }
@@ -406,12 +714,10 @@ export class LqaMercadolibreSelections extends Component {
                 "retry_selection_job",
                 [job.id]
             );
-            this.notification.add("Retomando la importación.", { type: "success" });
+            this.scheduleImportPoll();
+            this.notification.add("Retomando la importación.", { type: "info" });
         } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudo retomar la importación.",
-                { type: "danger" }
-            );
+            this.notification.add(error?.data?.message || "No se pudo retomar.", { type: "danger" });
         } finally {
             this.state.retryingImport = false;
         }
@@ -421,140 +727,83 @@ export class LqaMercadolibreSelections extends Component {
         this.state.importJob = null;
     }
 
-    openDeleteFolder(folder) {
-        this.state.deletingFolder = folder;
-    }
+    // ------------------------------------------------------------ formato
 
-    closeDeleteFolder() {
-        this.state.deletingFolder = null;
-    }
-
-    async confirmDeleteFolder() {
-        const folder = this.state.deletingFolder;
-        if (!folder) {
-            return;
-        }
-        try {
-            await this.orm.call(
-                "lqa.mercadolibre.catalog.service",
-                "delete_selection_folder",
-                [folder.id]
-            );
-            this.state.deletingFolder = null;
-            this.notification.add("Carpeta eliminada.", { type: "success" });
-            await this.loadFolders();
-        } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudo eliminar la carpeta.",
-                { type: "danger" }
-            );
-        }
-    }
-
-    async downloadFolderCsv(folder) {
-        if (!this.selectedColumnCount) {
-            this.notification.add("Seleccioná al menos una columna para el CSV.", {
-                type: "warning",
-            });
-            return;
-        }
-        this.state.exportingFolderId = String(folder.id);
-        try {
-            const params = new URLSearchParams({
-                columns: this.selectedColumnKeys.join(","),
-            });
-            const anchor = document.createElement("a");
-            anchor.href = `/lqa_admin_panel/mercadolibre/selections/${encodeURIComponent(folder.id)}/csv?${params.toString()}`;
-            anchor.download = "";
-            document.body.appendChild(anchor);
-            anchor.click();
-            anchor.remove();
-            this.notification.add(
-                `La descarga de ${this.formatNumber(folder.productCount)} publicaciones comenzo. El archivo se genera por lotes.`,
-                { type: "info" }
-            );
-        } catch (error) {
-            this.notification.add(
-                error?.data?.message || "No se pudo descargar el CSV.",
-                { type: "danger" }
-            );
-        } finally {
-            this.state.exportingFolderId = "";
-        }
-    }
-
-    isSelectedFolder(folder) {
-        return String(folder.id) === String(this.state.selectedFolderId);
-    }
-
-    isExportingFolder(folder) {
-        return String(folder.id) === String(this.state.exportingFolderId);
-    }
-
-    isColumnSelected(column) {
-        return Boolean(this.state.selectedColumns[column.key]);
-    }
+    noop() {}
 
     formatNumber(value) {
-        const numericValue = Number(value);
-        if (!Number.isFinite(numericValue)) {
-            return "0";
-        }
-        return new Intl.NumberFormat("es-AR").format(numericValue);
+        const number = Number(value);
+        return Number.isFinite(number) ? new Intl.NumberFormat("es-AR").format(number) : "0";
     }
 
-    formatCurrency(value, currency = "ARS", digits = 0) {
-        const numericValue = Number(value);
-        if (!Number.isFinite(numericValue)) {
-            return "-";
+    formatCurrency(value, currency = "ARS") {
+        const number = Number(value);
+        if (!Number.isFinite(number)) {
+            return "—";
         }
         return new Intl.NumberFormat("es-AR", {
             style: "currency",
             currency: currency || "ARS",
-            minimumFractionDigits: digits,
-            maximumFractionDigits: digits,
-        }).format(numericValue);
+            maximumFractionDigits: 0,
+        }).format(number);
+    }
+
+    formatCompact(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) {
+            return "—";
+        }
+        return new Intl.NumberFormat("es-AR", {
+            style: "currency",
+            currency: "ARS",
+            notation: "compact",
+            maximumFractionDigits: 1,
+        }).format(number);
     }
 
     formatPercent(value) {
-        const numericValue = Number(value);
-        if (!Number.isFinite(numericValue)) {
-            return "0%";
-        }
-        return `${new Intl.NumberFormat("es-AR", {
-            maximumFractionDigits: 2,
-        }).format(numericValue)}%`;
+        const number = Number(value);
+        return Number.isFinite(number)
+            ? `${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(number)}%`
+            : "—";
     }
 
-    formatDateTime(value) {
+    relativeDate(value) {
         if (!value) {
-            return "-";
+            return "—";
         }
-        const date = new Date(value);
+        const date = new Date(`${String(value).replace(" ", "T")}Z`);
         if (Number.isNaN(date.getTime())) {
             return value;
         }
-        return new Intl.DateTimeFormat("es-AR", {
-            day: "2-digit",
-            month: "2-digit",
-            year: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-        }).format(date);
+        const days = Math.floor((Date.now() - date.getTime()) / 86400000);
+        if (days <= 0) {
+            return "hoy";
+        }
+        if (days === 1) {
+            return "ayer";
+        }
+        if (days < 30) {
+            return `hace ${days} días`;
+        }
+        return new Intl.DateTimeFormat("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" }).format(date);
     }
 
     statusLabel(status) {
         return (
-            {
-                active: "Activa",
-                paused: "Pausada",
-                closed: "Cerrada",
-                not_found: "No encontrada",
-            }[status] || status || "Sin estado"
+            { active: "Activa", paused: "Pausada", closed: "Cerrada", under_review: "En revisión", not_found: "No encontrada" }[status] ||
+            status ||
+            "Sin datos"
         );
+    }
+
+    statusTone(status) {
+        return { active: "is-active", paused: "is-paused", closed: "is-closed" }[status] || "is-other";
+    }
+
+    hasData(product) {
+        return Boolean(product.title);
     }
 }
 
-registry
-    .category("actions")
-    .add("lqa_admin_panel.mercadolibre_selections", LqaMercadolibreSelections);
+registry.category("actions").add("lqa_admin_panel.mercadolibre_selections", LqaMercadolibreSelections);

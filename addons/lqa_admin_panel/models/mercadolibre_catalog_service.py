@@ -2167,20 +2167,29 @@ class LqaMercadolibreCatalogService(models.AbstractModel):
         return products, total or len(products)
 
     @api.model
-    def get_selection_products(self, folder_id, limit=200, offset=0):
+    def get_selection_products(
+        self, folder_id, limit=200, offset=0, search="", status="", sort="", with_summary=False
+    ):
         self._check_access()
         folder = self._get_folder(folder_id)
         limit = min(max(self._as_int(limit, 200), 1), 1000)
         offset = max(self._as_int(offset, 0), 0)
-        domain = [("folder_id", "=", folder.id)]
-        lines = self.env["lqa.mercadolibre.selection.item"].search(
-            domain,
-            limit=limit,
-            offset=offset,
-            order="write_date desc, id desc",
-        )
-        total = self.env["lqa.mercadolibre.selection.item"].search_count(domain)
-        return {
+        item_model = self.env["lqa.mercadolibre.selection.item"]
+        base = [("folder_id", "=", folder.id)]
+        domain = base + self._selection_status_domain(status)
+        search = self._clean(search)
+        if search:
+            domain += [
+                "|", "|", "|",
+                ("item_id", "ilike", search),
+                ("sku", "ilike", search),
+                ("title", "ilike", search),
+                ("brand", "ilike", search),
+            ]
+        order = self.SELECTION_SORTS.get(sort, "write_date desc, id desc")
+        lines = item_model.search(domain, limit=limit, offset=offset, order=order)
+        total = item_model.search_count(domain)
+        data = {
             "folder": self._folder_to_dict(folder),
             "products": [line.to_panel_dict() for line in lines],
             "pagination": {
@@ -2192,6 +2201,97 @@ class LqaMercadolibreCatalogService(models.AbstractModel):
                 "has_previous": offset > 0,
             },
         }
+        if with_summary:
+            data["summary"] = self._selection_summary(folder)
+        return data
+
+    SELECTION_SORTS = {
+        "recent": "write_date desc, id desc",
+        "revenue": "revenue desc, id desc",
+        "orders": "orders_count desc, id desc",
+        "visits": "total_visits desc, id desc",
+        "price_desc": "price desc, id desc",
+        "price_asc": "price asc, id asc",
+        "stock_asc": "available_quantity asc, id asc",
+        "title": "title asc, id asc",
+    }
+
+    def _selection_status_domain(self, status):
+        return {
+            "active": [("status", "=", "active")],
+            "paused": [("status", "=", "paused")],
+            "closed": [("status", "=", "closed")],
+            "out_of_stock": [("available_quantity", "<=", 0), ("title", "!=", False)],
+            # Guardados por MLA que Catalog Sync todavia no completo.
+            "no_data": ["|", ("title", "=", False), ("title", "=", "")],
+        }.get(status, [])
+
+    def _selection_summary(self, folder):
+        item_model = self.env["lqa.mercadolibre.selection.item"]
+        base = [("folder_id", "=", folder.id)]
+        counts = {
+            key: item_model.search_count(base + self._selection_status_domain(key))
+            for key in ("active", "paused", "closed", "out_of_stock", "no_data")
+        }
+        counts["all"] = item_model.search_count(base)
+        totals = item_model.read_group(
+            base, ["revenue:sum", "orders_count:sum", "units_sold:sum"], []
+        )
+        totals = totals[0] if totals else {}
+        return {
+            "counts": counts,
+            "revenue": totals.get("revenue") or 0,
+            "orders": totals.get("orders_count") or 0,
+            "units": totals.get("units_sold") or 0,
+        }
+
+    @api.model
+    def rename_selection_folder(self, folder_id, name):
+        self._check_access()
+        folder = self._get_folder(folder_id)
+        self._check_folder_owner(folder)
+        name = self._clean(name)
+        if not name:
+            raise UserError(_("Indicá un nombre para la carpeta."))
+        folder.write({"name": name[:120]})
+        return self._folder_to_dict(folder)
+
+    @api.model
+    def remove_selection_products(self, folder_id, line_ids):
+        """Saca de la carpeta varios productos guardados."""
+        self._check_access()
+        folder = self._get_folder(folder_id)
+        ids = [self._as_int(line_id, 0) for line_id in (line_ids or [])]
+        lines = self.env["lqa.mercadolibre.selection.item"].search(
+            [("folder_id", "=", folder.id), ("id", "in", [i for i in ids if i])]
+        )
+        if not lines:
+            raise UserError(_("Elegí al menos un producto de la carpeta."))
+        removed = len(lines)
+        lines.unlink()
+        data = self._folder_to_dict(folder)
+        data["removed"] = removed
+        return data
+
+    @api.model
+    def get_selection_folder_mlas(self, folder_id):
+        """Los MLA de la carpeta, para copiarlos o pegarlos en otra herramienta."""
+        self._check_access()
+        folder = self._get_folder(folder_id)
+        lines = self.env["lqa.mercadolibre.selection.item"].search_read(
+            [("folder_id", "=", folder.id), ("item_id", "!=", False)],
+            ["item_id"],
+            order="id",
+            limit=200000,
+        )
+        return [line["item_id"] for line in lines]
+
+    def _check_folder_owner(self, folder):
+        if (
+            not self.env.user.has_group("lqa_admin_panel.group_lqa_admin")
+            and folder.create_uid != self.env.user
+        ):
+            raise AccessError(_("Solo quien creó la carpeta o un administrador puede cambiarla."))
 
     @api.model
     def remove_selection_product(self, line_id):
