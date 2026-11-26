@@ -130,6 +130,11 @@ class LqaMercadolibreCatalogService(models.AbstractModel):
     EXPORT_CYCLE_SECONDS = 45
     EXPORT_MAX_PARTS = 20
     EXPORT_MAX_ROWS_PER_SHEET = 1048575
+    # Tope de filas por exportacion. Catalog Sync pagina por offset: medido en
+    # produccion, una pagina de 1.000 tarda 15-55 s hasta el offset 500.000 y
+    # pasado el 1.000.000 no responde en 90 s, asi que una exportacion mas
+    # grande corre horas y termina fallando por timeout. Mejor decirlo antes.
+    EXPORT_MAX_ROWS = 500000
     EXPORT_RETENTION_DAYS = 7
     MLA_FILE_BATCH_DEADLINE = 90
     JOB_HEARTBEAT_STALE_MINUTES = 5
@@ -1421,6 +1426,9 @@ class LqaMercadolibreCatalogService(models.AbstractModel):
             ),
             "error": export.error_message or "",
             "canCancel": export.state in ("queued", "running"),
+            # Para calcular velocidad y tiempo restante en la pantalla.
+            "startedAt": fields.Datetime.to_string(export.create_date) or "",
+            "maxRows": self.EXPORT_MAX_ROWS,
         }
 
     def _spawn_catalog_export_worker(self, export):
@@ -1647,14 +1655,23 @@ class LqaMercadolibreCatalogService(models.AbstractModel):
 
             if not matched:
                 matched = self._as_int(pagination.get("total"), 0)
-                if matched > self.EXPORT_MAX_ROWS_PER_SHEET * export.part_count:
+                if matched > self.EXPORT_MAX_ROWS:
                     raise SelectionLimitError(
                         _(
-                            "El filtro devuelve %s productos y no entran en %s "
-                            "partes de Excel. Aumenta las partes o afina el filtro."
+                            "El filtro devuelve %(total)s productos y la exportación "
+                            "admite hasta %(max)s. Acotá el filtro (por estado, "
+                            "marca, categoría o fechas) y volvé a exportar."
                         )
-                        % (matched, export.part_count)
+                        % {
+                            "total": f"{matched:,}".replace(",", "."),
+                            "max": f"{self.EXPORT_MAX_ROWS:,}".replace(",", "."),
+                        }
                     )
+                # Una hoja de Excel admite 1.048.575 filas: si las partes pedidas
+                # no alcanzan, se suben solas en vez de fallar.
+                needed_parts = -(-matched // self.EXPORT_MAX_ROWS_PER_SHEET) if matched else 1
+                if needed_parts > export.part_count:
+                    export.write({"part_count": min(needed_parts, self.EXPORT_MAX_PARTS)})
                 # "N partes iguales": el total recien se conoce con la primera
                 # pagina, asi que el tamano de cada parte se fija aca.
                 rows_per_part = max(

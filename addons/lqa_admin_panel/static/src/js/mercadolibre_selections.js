@@ -58,7 +58,10 @@ export class LqaMercadolibreSelections extends Component {
             folders: [],
             products: [],
             folderPagination: {},
-            selectedFolderId: "",
+            // El catalogo abre esta vista con la carpeta ya elegida.
+            selectedFolderId: String(
+                this.props.action?.context?.lqa_selection_folder_id || ""
+            ),
             loadingFolders: true,
             loadingProducts: false,
             exportingFolderId: "",
