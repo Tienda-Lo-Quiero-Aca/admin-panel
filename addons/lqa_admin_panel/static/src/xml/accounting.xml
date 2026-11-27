@@ -2,7 +2,7 @@
 <templates xml:space="preserve">
     <t t-name="lqa_admin_panel.Accounting">
         <div t-att-class="'o_lqa_accounting ' + (isArcaBilling ? 'is-comprobantes-page' : '') + (isDashboard ? ' is-dashboard-page' : '') + (isXubio ? ' is-xubio-page' : '')">
-            <header t-if="!isArcaBilling &amp;&amp; !isXubioFacturacion" class="o_lqa_accounting__header">
+            <header t-if="!isArcaBilling" class="o_lqa_accounting__header">
                 <div t-att-class="isXubio ? 'o_lqa_accounting__xubio_header_brand' : ''">
                     <img
                         t-if="isXubio"
@@ -39,28 +39,187 @@
                 </button>
             </header>
 
-            <section t-if="isDashboard" class="o_lqa_accounting__admin_dashboard">
-                <div class="o_lqa_accounting__admin_cards">
-                    <button type="button" class="o_lqa_accounting__admin_card" t-on-click="openClients">
-                        <span><i class="fa fa-users"/></span>
-                        <small>Clientes</small>
-                        <strong>Alta y regularizacion</strong>
-                        <p>Crear clientes desde TLQV y resolver casos de consumidor final.</p>
-                        <em>Entrar <i class="fa fa-arrow-right"/></em>
+            <section t-if="isDashboard" class="o_lqa_adm">
+                <!-- Atajo por TLQV -->
+                <div class="o_lqa_adm__quick">
+                    <label>
+                        <i class="fa fa-search"/>
+                        <input
+                            type="text"
+                            placeholder="TLQV-23240"
+                            t-model="state.dashboard.tlqv"
+                            t-on-keydown="onDashboardKeydown"
+                        />
+                    </label>
+                    <button type="button" class="o_lqa_adm__btn is-primary" t-on-click="quickInvoice">
+                        <i class="fa fa-pencil-square-o"/> Facturar
                     </button>
-                    <button type="button" class="o_lqa_accounting__admin_card" t-on-click="openArcaBilling">
-                        <span><i class="fa fa-file-text-o"/></span>
-                        <small>Comprobantes</small>
-                        <strong>Auditoria Xubio</strong>
-                        <p>Consultar, exportar y generar respaldos PDF de comprobantes.</p>
-                        <em>Entrar <i class="fa fa-arrow-right"/></em>
+                    <button type="button" class="o_lqa_adm__btn" t-on-click="quickCreditNote">
+                        <i class="fa fa-undo"/> Nota de crédito
                     </button>
-                    <button type="button" class="o_lqa_accounting__admin_card" t-on-click="openXubioFacturacion">
-                        <span><i class="fa fa-pencil-square-o"/></span>
-                        <small>Facturacion</small>
-                        <strong>Emision operativa</strong>
-                        <p>Crea facturas individuales o encola lotes masivos desde codigos TLQV.</p>
-                        <em>Entrar <i class="fa fa-arrow-right"/></em>
+                    <button type="button" class="o_lqa_adm__btn" t-on-click="quickComprobantes">
+                        <i class="fa fa-file-text-o"/> Ver comprobantes
+                    </button>
+                    <button type="button" class="o_lqa_adm__iconbtn" t-on-click="loadDashboard" title="Actualizar">
+                        <i t-att-class="state.dashboard.loadingLocal or state.dashboard.loadingRemote ? 'fa fa-refresh fa-spin' : 'fa fa-refresh'"/>
+                    </button>
+                </div>
+
+                <!-- Indicadores -->
+                <t t-set="remote" t-value="state.dashboard.remote"/>
+                <t t-set="local" t-value="state.dashboard.local"/>
+                <div class="o_lqa_adm__kpis">
+                    <div>
+                        <span>Facturas hoy</span>
+                        <t t-if="remote and remote.comprobantes">
+                            <strong t-esc="formatNumber(remote.comprobantes.invoicesToday)"/>
+                            <small><t t-if="remote.comprobantes.invoicedTodayPartial">más de </t><t t-esc="formatCurrency(remote.comprobantes.invoicedToday)"/></small>
+                        </t>
+                        <small t-elif="remote and remote.errors.comprobantes" class="is-error">No disponible</small>
+                        <i t-else="" class="o_lqa_adm__shimmer"/>
+                    </div>
+                    <div>
+                        <span>Facturas del mes</span>
+                        <strong t-if="remote and remote.comprobantes" t-esc="formatNumber(remote.comprobantes.invoicesMonth)"/>
+                        <small t-elif="remote and remote.errors.comprobantes" class="is-error">No disponible</small>
+                        <i t-else="" class="o_lqa_adm__shimmer"/>
+                    </div>
+                    <div>
+                        <span>Notas de crédito del mes</span>
+                        <strong t-if="remote and remote.comprobantes" t-esc="formatNumber(remote.comprobantes.creditNotesMonth)"/>
+                        <small t-elif="remote and remote.errors.comprobantes" class="is-error">No disponible</small>
+                        <i t-else="" class="o_lqa_adm__shimmer"/>
+                    </div>
+                    <button type="button" class="is-alert" t-on-click="() => this.openIssuesByReason('')">
+                        <span>Ventas bloqueadas</span>
+                        <t t-if="remote and remote.issues">
+                            <strong t-att-class="remote.issues.total ? 'is-danger' : ''"><t t-esc="formatNumber(remote.issues.total)"/><t t-if="remote.issues.truncated">+</t></strong>
+                            <small>sin facturar · ver <i class="fa fa-arrow-right"/></small>
+                        </t>
+                        <small t-elif="remote and remote.errors.issues" class="is-error">No disponible</small>
+                        <i t-else="" class="o_lqa_adm__shimmer"/>
+                    </button>
+                    <div>
+                        <span>Lotes en curso</span>
+                        <strong t-if="local" t-esc="formatNumber(local.activeBatches)"/>
+                        <i t-else="" class="o_lqa_adm__shimmer"/>
+                    </div>
+                </div>
+                <p t-if="remote and remote.errors.comprobantes" class="o_lqa_adm__warn">
+                    <i class="fa fa-exclamation-triangle"/> Comprobantes: <t t-esc="remote.errors.comprobantes"/>
+                </p>
+                <p t-if="remote and remote.errors.issues" class="o_lqa_adm__warn">
+                    <i class="fa fa-exclamation-triangle"/> Bloqueados: <t t-esc="remote.errors.issues"/>
+                </p>
+
+                <div class="o_lqa_adm__grid">
+                    <!-- Bloqueados por motivo -->
+                    <article class="o_lqa_adm__card">
+                        <header>
+                            <div>
+                                <h3>Por qué no se facturan</h3>
+                                <p>Ventas bloqueadas abiertas, por motivo.</p>
+                            </div>
+                            <button type="button" class="o_lqa_adm__link" t-on-click="() => this.openIssuesByReason('')">Ver todas</button>
+                        </header>
+                        <div t-if="!remote" class="o_lqa_adm__list">
+                            <t t-foreach="[1, 2, 3, 4]" t-as="n" t-key="n"><i class="o_lqa_adm__shimmer is-row"/></t>
+                        </div>
+                        <p t-elif="!remote.issues" class="o_lqa_adm__muted">No se pudo consultar Invoice API.</p>
+                        <div t-elif="!remote.issues.byReason.length" class="o_lqa_adm__ok">
+                            <i class="fa fa-check-circle"/> No hay ventas bloqueadas.
+                        </div>
+                        <div t-else="" class="o_lqa_adm__list">
+                            <t t-foreach="remote.issues.byReason" t-as="item" t-key="item.reason">
+                                <button type="button" class="o_lqa_adm__reason" t-on-click="() => this.openIssuesByReason(item.reason)">
+                                    <div>
+                                        <strong t-esc="issueReasonText(item.reason)"/>
+                                        <small t-esc="item.reason"/>
+                                    </div>
+                                    <span class="o_lqa_adm__bar"><i t-att-style="'width:' + issueBarWidth(item.count)"/></span>
+                                    <b t-esc="formatNumber(item.count)"/>
+                                </button>
+                            </t>
+                        </div>
+                    </article>
+
+                    <!-- Actividad -->
+                    <article class="o_lqa_adm__card">
+                        <header>
+                            <div>
+                                <h3>Actividad del panel</h3>
+                                <p t-if="local">
+                                    Últimos 30 días: <b t-esc="formatNumber(local.jobs30d.created)"/> facturas creadas
+                                    · <b t-esc="formatNumber(local.jobs30d.simulated)"/> simulaciones
+                                    · <b t-att-class="local.jobs30d.createFailed + local.jobs30d.simulateFailed ? 'is-danger' : ''" t-esc="formatNumber(local.jobs30d.createFailed + local.jobs30d.simulateFailed)"/> con error
+                                </p>
+                            </div>
+                            <button type="button" class="o_lqa_adm__link" t-on-click="openXubioFacturacion">Ir a Facturación</button>
+                        </header>
+                        <div t-if="!local" class="o_lqa_adm__list">
+                            <t t-foreach="[1, 2, 3, 4]" t-as="n" t-key="n"><i class="o_lqa_adm__shimmer is-row"/></t>
+                        </div>
+                        <p t-elif="!local.recentJobs.length" class="o_lqa_adm__muted">Todavía no se facturó nada desde el panel.</p>
+                        <div t-else="" class="o_lqa_adm__list">
+                            <t t-foreach="local.recentJobs" t-as="job" t-key="job.id">
+                                <div class="o_lqa_adm__job">
+                                    <span t-att-class="'o_lqa_accounting__pill ' + stateClass(job.state)" t-esc="stateLabel(job.state)"/>
+                                    <div>
+                                        <strong><t t-esc="job.tlqvCode"/> <small t-esc="job.dryRun ? 'Simulación' : 'Creación'"/></strong>
+                                        <small t-att-class="job.state === 'failed' ? 'is-danger' : ''" t-att-title="jobOutcome(job)" t-esc="jobOutcome(job)"/>
+                                    </div>
+                                    <small class="o_lqa_adm__when"><t t-esc="formatDate(job.createdAt)"/><br/><t t-esc="job.user"/></small>
+                                </div>
+                            </t>
+                        </div>
+                    </article>
+                </div>
+
+                <!-- Lotes -->
+                <article t-if="local and (local.invoiceBatches.length or local.ncBatches.length)" class="o_lqa_adm__card">
+                    <header>
+                        <div>
+                            <h3>Últimos lotes</h3>
+                            <p>Facturación y notas de crédito masivas.</p>
+                        </div>
+                    </header>
+                    <div class="o_lqa_adm__batches">
+                        <t t-foreach="local.invoiceBatches" t-as="batch" t-key="'i' + batch.id">
+                            <div class="o_lqa_adm__batch">
+                                <span class="o_lqa_adm__tag">Facturas</span>
+                                <span t-att-class="'o_lqa_accounting__pill ' + stateClass(batch.state)" t-esc="stateLabel(batch.state)"/>
+                                <strong><t t-esc="formatNumber(batch.totalQueued || batch.totalUnique)"/> TLQV<t t-if="batch.dryRun"> · simulación</t></strong>
+                                <small><t t-esc="formatDate(batch.createdAt)"/> · <t t-esc="batch.user"/></small>
+                            </div>
+                        </t>
+                        <t t-foreach="local.ncBatches" t-as="batch" t-key="'n' + batch.id">
+                            <div class="o_lqa_adm__batch">
+                                <span class="o_lqa_adm__tag is-nc">Notas de crédito</span>
+                                <span t-att-class="'o_lqa_accounting__pill ' + stateClass(batch.state)" t-esc="stateLabel(batch.state)"/>
+                                <strong><t t-esc="formatNumber(batch.totalQueued || batch.totalUnique)"/> TLQV</strong>
+                                <small><t t-esc="formatDate(batch.createdAt)"/> · <t t-esc="batch.user"/></small>
+                            </div>
+                        </t>
+                    </div>
+                </article>
+
+                <!-- Modulos -->
+                <div class="o_lqa_adm__modules">
+                    <button type="button" t-on-click="openClients">
+                        <i class="fa fa-users"/>
+                        <div><strong>Clientes</strong><small>Alta desde TLQV y consumidor final</small></div>
+                    </button>
+                    <button type="button" t-on-click="openArcaBilling">
+                        <i class="fa fa-file-text-o"/>
+                        <div><strong>Comprobantes</strong><small>Consultar, exportar y PDF</small></div>
+                    </button>
+                    <button type="button" t-on-click="openXubioFacturacion">
+                        <i class="fa fa-pencil-square-o"/>
+                        <div><strong>Facturación</strong><small>Individual, masiva y bloqueados</small></div>
+                    </button>
+                    <button type="button" t-on-click="openNotasCredito">
+                        <i class="fa fa-undo"/>
+                        <div><strong>Notas de crédito</strong><small>Anular facturas emitidas</small></div>
                     </button>
                 </div>
             </section>
@@ -535,6 +694,9 @@
                                             type="text"
                                             t-model="state.facturacion.invoice.form.tlqvCode"
                                             placeholder="TLQV-15783"
+                                            t-on-blur="precheckTlqv"
+                                            t-on-keydown="onTlqvKeydown"
+                                            t-on-input="onTlqvInput"
                                         />
                                     </label>
                                     <label>
@@ -548,6 +710,38 @@
                                         <small class="o_lqa_accounting__hint">Hoy o hasta 10 dias atras.</small>
                                     </label>
                                 </div>
+
+                                <div t-if="state.facturacion.invoice.precheck.loading" class="o_lqa_adm__precheck is-loading">
+                                    <i class="fa fa-circle-o-notch fa-spin"/> Revisando <t t-esc="state.facturacion.invoice.precheck.code"/>: comprobantes existentes y bloqueos…
+                                </div>
+                                <t t-elif="state.facturacion.invoice.precheck.result">
+                                    <t t-set="pre" t-value="state.facturacion.invoice.precheck.result"/>
+                                    <div t-att-class="'o_lqa_adm__precheck ' + (pre.hasLiveInvoice ? 'is-danger' : (pre.issues.length ? 'is-warn' : 'is-ok'))">
+                                        <div class="o_lqa_adm__prehead">
+                                            <i t-att-class="pre.hasLiveInvoice ? 'fa fa-exclamation-circle' : (pre.issues.length ? 'fa fa-exclamation-triangle' : 'fa fa-check-circle')"/>
+                                            <strong>
+                                                <t t-if="pre.hasLiveInvoice"><t t-esc="pre.tlqvCode"/> ya tiene una factura vigente</t>
+                                                <t t-elif="pre.issues.length"><t t-esc="pre.tlqvCode"/> tiene bloqueos abiertos</t>
+                                                <t t-else=""><t t-esc="pre.tlqvCode"/>: sin facturas vigentes ni bloqueos conocidos</t>
+                                            </strong>
+                                        </div>
+                                        <ul t-if="pre.comprobantes.length">
+                                            <li t-foreach="pre.comprobantes" t-as="item" t-key="item_index">
+                                                <b><t t-esc="item.tipoNombre || item.documentKind"/> <t t-esc="item.letra"/> <t t-esc="item.numero"/></b>
+                                                · <t t-esc="formatDateOnly(item.fecha)"/> · <t t-esc="formatCurrency(item.total)"/>
+                                                <t t-if="item.cliente"> · <t t-esc="item.cliente"/></t>
+                                            </li>
+                                        </ul>
+                                        <ul t-if="pre.issues.length">
+                                            <li t-foreach="pre.issues" t-as="issue" t-key="issue_index">
+                                                <b t-esc="issueReasonText(issue.reason)"/>
+                                                <t t-if="issue.message"> · <t t-esc="issue.message"/></t>
+                                            </li>
+                                        </ul>
+                                        <small t-if="pre.hasLiveInvoice">Para refacturar: primero nota de crédito (y su CAE) y después la factura nueva.</small>
+                                        <small t-foreach="Object.values(pre.errors || {})" t-as="err" t-key="err_index" class="is-muted">No se pudo revisar todo: <t t-esc="err"/></small>
+                                    </div>
+                                </t>
 
                                 <div class="o_lqa_accounting__mode_row">
                                     <div class="o_lqa_accounting__mode_control">
@@ -779,7 +973,21 @@
                                 <strong>Sin registros todavia</strong>
                                 <span>Cuando simules o crees una factura, queda guardada aca.</span>
                             </div>
-                            <div t-else="" class="o_lqa_accounting__table_wrap">
+                            <t t-else="">
+                                <div class="o_lqa_adm__jobtools">
+                                    <div class="o_lqa_adm__chips">
+                                        <button type="button" t-att-class="state.facturacion.invoice.jobFilter === 'all' ? 'is-on' : ''" t-on-click="() => this.setInvoiceJobFilter('all')">Todos <b t-esc="invoiceJobCounts.all"/></button>
+                                        <button type="button" t-att-class="(state.facturacion.invoice.jobFilter === 'ready' ? 'is-on ' : '') + 'tone-ok'" t-on-click="() => this.setInvoiceJobFilter('ready')">Simuladas listas <b t-esc="invoiceJobCounts.ready"/></button>
+                                        <button type="button" t-att-class="state.facturacion.invoice.jobFilter === 'created' ? 'is-on' : ''" t-on-click="() => this.setInvoiceJobFilter('created')">Creadas <b t-esc="invoiceJobCounts.created"/></button>
+                                        <button type="button" t-att-class="(state.facturacion.invoice.jobFilter === 'failed' ? 'is-on ' : '') + 'tone-danger'" t-on-click="() => this.setInvoiceJobFilter('failed')">Con error <b t-esc="invoiceJobCounts.failed"/></button>
+                                    </div>
+                                    <label class="o_lqa_adm__search">
+                                        <i class="fa fa-search"/>
+                                        <input type="search" placeholder="TLQV o usuario" t-model="state.facturacion.invoice.jobSearch"/>
+                                    </label>
+                                </div>
+                                <div t-if="!filteredInvoiceJobs.length" class="o_lqa_adm__muted">Ningún registro con este filtro.</div>
+                                <div t-else="" class="o_lqa_accounting__table_wrap">
                                 <table class="o_lqa_accounting__table is-invoice_jobs">
                                     <thead>
                                         <tr>
@@ -787,13 +995,14 @@
                                             <th>TLQV</th>
                                             <th>Modo</th>
                                             <th>Estado</th>
+                                            <th>Resultado</th>
                                             <th>Ejecutado por</th>
-                                            <th>Nota</th>
+                                            <th/>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         <tr
-                                            t-foreach="state.facturacion.invoice.jobs"
+                                            t-foreach="filteredInvoiceJobs"
                                             t-as="job"
                                             t-key="job.id"
                                             t-att-class="state.facturacion.invoice.selectedJob &amp;&amp; state.facturacion.invoice.selectedJob.id === job.id ? 'is-active' : ''"
@@ -805,12 +1014,47 @@
                                             <td>
                                                 <span t-att-class="'o_lqa_accounting__pill ' + stateClass(job.state)" t-esc="stateLabel(job.state)"/>
                                             </td>
+                                            <td class="o_lqa_adm__outcome">
+                                                <span t-att-class="job.state === 'failed' ? 'is-danger' : ''" t-att-title="jobOutcome(job)" t-esc="jobOutcome(job)"/>
+                                                <small t-if="job.note" t-esc="job.note"/>
+                                            </td>
                                             <td t-esc="job.user"/>
-                                            <td t-esc="job.note || '-'"/>
+                                            <td class="o_lqa_adm__rowactions" t-on-click.stop="() => {}">
+                                                <t t-if="state.facturacion.invoice.rowRunningId === job.id">
+                                                    <span class="o_lqa_adm__working"><i class="fa fa-circle-o-notch fa-spin"/> Ejecutando…</span>
+                                                </t>
+                                                <t t-elif="state.facturacion.invoice.rowConfirmId === job.id">
+                                                    <span class="o_lqa_adm__confirm">¿Crear en Xubio?</span>
+                                                    <button type="button" class="o_lqa_adm__btn is-danger is-sm" t-on-click="() => this.runJobAgain(job, false)">Sí, crear</button>
+                                                    <button type="button" class="o_lqa_adm__btn is-sm" t-on-click="cancelRowConfirm">No</button>
+                                                </t>
+                                                <t t-else="">
+                                                    <button
+                                                        t-if="canCreateFromSimulation(job)"
+                                                        type="button"
+                                                        class="o_lqa_adm__btn is-primary is-sm"
+                                                        t-att-disabled="state.facturacion.invoice.rowRunningId"
+                                                        t-on-click="() => this.runJobAgain(job, false)"
+                                                    >
+                                                        <i class="fa fa-check"/> Crear en Xubio
+                                                    </button>
+                                                    <button
+                                                        t-if="job.state === 'failed'"
+                                                        type="button"
+                                                        class="o_lqa_adm__btn is-sm"
+                                                        t-att-disabled="state.facturacion.invoice.rowRunningId"
+                                                        t-on-click="() => this.runJobAgain(job, job.dryRun)"
+                                                        t-att-title="job.dryRun ? 'Volver a simular' : 'Volver a pedir la creación en Xubio'"
+                                                    >
+                                                        <i class="fa fa-refresh"/> Reintentar
+                                                    </button>
+                                                </t>
+                                            </td>
                                         </tr>
                                     </tbody>
                                 </table>
                             </div>
+                            </t>
                         </section>
 
                     <div

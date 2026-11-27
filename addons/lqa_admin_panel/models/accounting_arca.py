@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+from datetime import timedelta
 from urllib.parse import quote
 
 import requests
@@ -1587,10 +1588,156 @@ class LqaAccountingService(models.AbstractModel):
             return {}
         return parsed if isinstance(parsed, dict) else {}
 
+    # ------------------------------------------------------------------
+    # Dashboard de Administracion
+    # ------------------------------------------------------------------
+
+    DASHBOARD_TIMEOUT = 10
+
+    @api.model
+    def get_admin_dashboard_local(self):
+        """Lo que el panel guarda: facturas ejecutadas desde aca y lotes."""
+        self._check_access()
+        is_admin = self.env.user.has_group("lqa_admin_panel.group_lqa_admin")
+        own = [] if is_admin else [("user_id", "=", self.env.user.id)]
+        since = fields.Datetime.now() - timedelta(days=30)
+        job_model = self.env["lqa.accounting.invoice.creation.job"].sudo()
+        recent_domain = own + [("create_date", ">=", since)]
+
+        def count(extra):
+            return job_model.search_count(recent_domain + extra)
+
+        invoice_batches = self.env["lqa.accounting.invoice.batch"].sudo().search(own, limit=5)
+        nc_batches = self.env["lqa.accounting.nota.credito.batch"].sudo().search(own, limit=5)
+        return {
+            "jobs30d": {
+                "created": count([("dry_run", "=", False), ("state", "=", "done")]),
+                "createFailed": count([("dry_run", "=", False), ("state", "=", "failed")]),
+                "simulated": count([("dry_run", "=", True), ("state", "=", "done")]),
+                "simulateFailed": count([("dry_run", "=", True), ("state", "=", "failed")]),
+            },
+            "recentJobs": [
+                self._invoice_job_to_dict(job) for job in job_model.search(own, limit=8)
+            ],
+            "invoiceBatches": [self._invoice_batch_to_dict(batch) for batch in invoice_batches],
+            "ncBatches": [self._nota_credito_batch_to_dict(batch) for batch in nc_batches],
+            "activeBatches": self.env["lqa.accounting.invoice.batch"].sudo().search_count(
+                own + [("state", "in", ["queued", "running"])]
+            )
+            + self.env["lqa.accounting.nota.credito.batch"].sudo().search_count(
+                own + [("state", "in", ["queued", "running"])]
+            ),
+        }
+
+    @api.model
+    def get_admin_dashboard_remote(self):
+        """Lo que vive en Madre e Invoice API. Cada bloque falla por separado."""
+        self._check_access()
+        today = fields.Date.context_today(self)
+        month_start = today.replace(day=1)
+        data = {
+            "today": fields.Date.to_string(today),
+            "monthStart": fields.Date.to_string(month_start),
+            "errors": {},
+        }
+
+        def comprobantes(kind, desde, limit=1):
+            response = self._request_json(
+                "GET",
+                self._join_url(self._madre_base_url(), "/api/internal/xubio/comprobantes"),
+                params={
+                    "limit": limit,
+                    "offset": 0,
+                    "documentKind": kind,
+                    "fechaDesde": fields.Date.to_string(desde),
+                    "fechaHasta": fields.Date.to_string(today),
+                },
+                headers=self._madre_headers(),
+                timeout=self.DASHBOARD_TIMEOUT,
+            )
+            if not response["ok"]:
+                raise UserError(_("Madre respondió %s") % response["status_code"])
+            payload = response["payload"] if isinstance(response["payload"], dict) else {}
+            items = self._response_items(payload)
+            total = self._as_int(
+                payload.get("total") or payload.get("count") or payload.get("totalCount"),
+                len(items),
+            )
+            return total, items
+
+        try:
+            today_total, today_items = comprobantes("INVOICE", today, limit=200)
+            month_total, _items = comprobantes("INVOICE", month_start)
+            nc_month, _items = comprobantes("CREDIT_NOTE", month_start)
+            data["comprobantes"] = {
+                "invoicesToday": today_total,
+                # El importe de hoy se suma de las facturas devueltas: alcanza
+                # mientras sean menos de 200 en el dia.
+                "invoicedToday": sum(
+                    self._as_float(item.get("importeTotal")) or 0 for item in today_items
+                ),
+                "invoicedTodayPartial": today_total > len(today_items),
+                "invoicesMonth": month_total,
+                "creditNotesMonth": nc_month,
+            }
+        except UserError as error:
+            data["errors"]["comprobantes"] = str(error)
+
+        try:
+            issues = self.get_invoice_issues({"status": "open", "limit": 500})
+            data["issues"] = {
+                "total": issues["total"],
+                "truncated": issues["truncated"],
+                "byReason": issues["byReason"][:8],
+            }
+        except UserError as error:
+            data["errors"]["issues"] = str(error)
+        return data
+
+    @api.model
+    def check_tlqv_before_invoice(self, tlqv_code):
+        """Antes de facturar: si ya tiene comprobantes y si esta bloqueado."""
+        self._check_access()
+        tlqv_code = self._normalize_tlqv(tlqv_code)
+        if not tlqv_code:
+            raise UserError(_("Ingresá un código TLQV válido."))
+        result = {"tlqvCode": tlqv_code, "comprobantes": [], "issues": [], "errors": {}}
+        try:
+            found = self.get_xubio_comprobantes({"tlqvCode": tlqv_code, "limit": 20})
+            result["comprobantes"] = [
+                {
+                    "documentKind": item["documentKind"],
+                    "tipoNombre": item["tipoNombre"],
+                    "letra": item["letraComprobante"],
+                    "numero": item["numeroDocumento"],
+                    "fecha": item["fechaEmision"],
+                    "total": item["importeTotal"],
+                    "cliente": item["clienteNombre"],
+                }
+                for item in found["items"]
+            ]
+        except UserError as error:
+            result["errors"]["comprobantes"] = str(error)
+        try:
+            result["issues"] = [
+                issue
+                for issue in self.get_invoice_issues_by_tlqv(tlqv_code)["items"]
+                if issue["status"] == "open"
+            ]
+        except UserError as error:
+            result["errors"]["issues"] = str(error)
+        invoices = sum(1 for item in result["comprobantes"] if item["documentKind"] == "INVOICE")
+        credit_notes = sum(
+            1 for item in result["comprobantes"] if item["documentKind"] == "CREDIT_NOTE"
+        )
+        # Una factura sin nota de credito que la anule sigue vigente.
+        result["hasLiveInvoice"] = invoices > credit_notes
+        return result
+
     @api.model
     def get_invoice_creation_jobs(self, limit=30):
         self._check_access()
-        limit = min(max(self._as_int(limit, 30), 1), 100)
+        limit = min(max(self._as_int(limit, 30), 1), 200)
         domain = []
         if not self.env.user.has_group("lqa_admin_panel.group_lqa_admin"):
             domain.append(("user_id", "=", self.env.user.id))

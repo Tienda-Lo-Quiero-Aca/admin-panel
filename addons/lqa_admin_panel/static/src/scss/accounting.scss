@@ -3517,3 +3517,659 @@
     gap: 10px;
     margin-top: 18px;
 }
+
+// ------------------------------------------------------------------
+// Dashboard de Administracion y mejoras de Facturacion (o_lqa_adm).
+// Mismos tokens que Catalogo, Pricing y Selecciones.
+// ------------------------------------------------------------------
+
+$adm-navy: #2d3277;
+$adm-navy-soft: #eef0fa;
+$adm-ink: #18212f;
+$adm-muted: #64748b;
+$adm-faint: #94a3b8;
+$adm-border: #e3e9f1;
+$adm-ok: #15803d;
+$adm-warn: #b45309;
+$adm-danger: #dc2626;
+$adm-red: #ff4f5a;
+
+@keyframes o_lqa_adm_shimmer {
+    0% {
+        background-position: -320px 0;
+    }
+    100% {
+        background-position: 320px 0;
+    }
+}
+
+.o_lqa_adm {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    color: $adm-ink;
+
+    .is-danger {
+        color: $adm-danger;
+    }
+}
+
+.o_lqa_adm__shimmer {
+    display: block;
+    width: 60%;
+    height: 22px;
+    border-radius: 6px;
+    background: linear-gradient(90deg, #eef2f7 0%, #f8fafc 50%, #eef2f7 100%);
+    background-size: 640px 100%;
+    animation: o_lqa_adm_shimmer 1.2s linear infinite;
+
+    &.is-row {
+        width: 100%;
+        height: 38px;
+        margin-bottom: 8px;
+    }
+}
+
+.o_lqa_adm__btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    height: 40px;
+    padding: 0 16px;
+    border: 1px solid $adm-border;
+    border-radius: 10px;
+    background: #fff;
+    color: $adm-ink;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+        border-color: #cbd5e1;
+    }
+
+    &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    &.is-primary {
+        border-color: $adm-navy;
+        background: $adm-navy;
+        color: #fff;
+    }
+
+    &.is-danger {
+        border-color: $adm-danger;
+        background: $adm-danger;
+        color: #fff;
+    }
+
+    &.is-sm {
+        height: 30px;
+        padding: 0 10px;
+        font-size: 12px;
+    }
+}
+
+.o_lqa_adm__iconbtn {
+    width: 40px;
+    height: 40px;
+    border: 1px solid $adm-border;
+    border-radius: 10px;
+    background: #fff;
+    color: $adm-muted;
+    cursor: pointer;
+}
+
+.o_lqa_adm__link {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: $adm-navy;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+
+    &:hover {
+        text-decoration: underline;
+    }
+}
+
+.o_lqa_adm__quick {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid $adm-border;
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 6px 18px rgba(15, 23, 42, 0.05);
+
+    label {
+        position: relative;
+        display: flex;
+        flex: 1 1 240px;
+        align-items: center;
+        margin: 0;
+
+        i {
+            position: absolute;
+            left: 14px;
+            color: $adm-faint;
+        }
+
+        input {
+            width: 100%;
+            height: 40px;
+            padding: 0 12px 0 38px;
+            border: 1px solid $adm-border;
+            border-radius: 10px;
+            background: #f8fafc;
+            font-size: 15px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            outline: none;
+
+            &:focus {
+                border-color: $adm-navy;
+                background: #fff;
+                box-shadow: 0 0 0 3px rgba($adm-navy, 0.12);
+            }
+        }
+    }
+}
+
+.o_lqa_adm__kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+
+    > div,
+    > button {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+        min-height: 96px;
+        padding: 14px 16px;
+        border: 1px solid $adm-border;
+        border-radius: 14px;
+        background: #fff;
+        text-align: left;
+
+        span {
+            color: $adm-muted;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        strong {
+            font-size: 26px;
+            font-weight: 800;
+            line-height: 1.1;
+            font-variant-numeric: tabular-nums;
+        }
+
+        small {
+            color: $adm-muted;
+            font-size: 12px;
+
+            &.is-error {
+                color: $adm-warn;
+                font-weight: 600;
+            }
+        }
+    }
+
+    > button {
+        cursor: pointer;
+        transition: border-color 0.15s, box-shadow 0.15s;
+
+        &:hover {
+            border-color: rgba($adm-danger, 0.4);
+            box-shadow: 0 8px 20px rgba($adm-danger, 0.08);
+        }
+
+        &.is-alert {
+            border-left: 4px solid $adm-red;
+        }
+    }
+}
+
+.o_lqa_adm__warn {
+    margin: -6px 0 0;
+    color: $adm-warn;
+    font-size: 12px;
+}
+
+.o_lqa_adm__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.o_lqa_adm__card {
+    padding: 16px;
+    border: 1px solid $adm-border;
+    border-radius: 14px;
+    background: #fff;
+
+    > header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+
+        h3 {
+            margin: 0 0 2px;
+            font-size: 16px;
+            font-weight: 800;
+        }
+
+        p {
+            margin: 0;
+            color: $adm-muted;
+            font-size: 12px;
+        }
+    }
+}
+
+.o_lqa_adm__list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.o_lqa_adm__muted {
+    margin: 8px 0;
+    color: $adm-muted;
+    font-size: 13px;
+}
+
+.o_lqa_adm__ok {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px;
+    border-radius: 10px;
+    background: #e7f6ec;
+    color: $adm-ok;
+    font-weight: 600;
+}
+
+.o_lqa_adm__reason {
+    display: grid;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 48px;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+
+    &:hover {
+        background: #f8fafc;
+    }
+
+    > div {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+
+        strong {
+            font-size: 13px;
+        }
+
+        small {
+            overflow: hidden;
+            color: $adm-faint;
+            font-size: 10px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+    }
+
+    > b {
+        color: $adm-danger;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+    }
+}
+
+.o_lqa_adm__bar {
+    height: 8px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #fdecec;
+
+    i {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: $adm-red;
+    }
+}
+
+.o_lqa_adm__job {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 4px;
+    border-bottom: 1px solid #f1f5f9;
+
+    &:last-child {
+        border-bottom: 0;
+    }
+
+    > div {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+
+        strong small {
+            margin-left: 4px;
+            color: $adm-faint;
+            font-weight: 500;
+        }
+
+        > small {
+            overflow: hidden;
+            color: $adm-muted;
+            font-size: 12px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+    }
+}
+
+.o_lqa_adm__when {
+    color: $adm-faint;
+    font-size: 11px;
+    text-align: right;
+}
+
+.o_lqa_adm__batches {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 10px;
+}
+
+.o_lqa_adm__batch {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    padding: 10px 12px;
+    border: 1px solid $adm-border;
+    border-radius: 12px;
+
+    strong {
+        flex: 1 1 100%;
+    }
+
+    small {
+        color: $adm-muted;
+        font-size: 12px;
+    }
+}
+
+.o_lqa_adm__tag {
+    padding: 1px 8px;
+    border-radius: 6px;
+    background: $adm-navy-soft;
+    color: $adm-navy;
+    font-size: 11px;
+    font-weight: 700;
+
+    &.is-nc {
+        background: #fff4e0;
+        color: $adm-warn;
+    }
+}
+
+.o_lqa_adm__modules {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 10px;
+
+    button {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px;
+        border: 1px solid $adm-border;
+        border-radius: 14px;
+        background: #fff;
+        text-align: left;
+        cursor: pointer;
+        transition: border-color 0.15s, transform 0.15s;
+
+        &:hover {
+            border-color: $adm-navy;
+            transform: translateY(-1px);
+        }
+
+        > i {
+            display: flex;
+            flex: 0 0 auto;
+            align-items: center;
+            justify-content: center;
+            width: 40px;
+            height: 40px;
+            border-radius: 12px;
+            background: $adm-navy-soft;
+            color: $adm-navy;
+            font-size: 17px;
+        }
+
+        div {
+            display: flex;
+            flex-direction: column;
+        }
+
+        small {
+            color: $adm-muted;
+            font-size: 12px;
+        }
+    }
+}
+
+// Facturacion: verificacion previa del TLQV.
+.o_lqa_adm__precheck {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 4px 0 14px;
+    padding: 12px 14px;
+    border: 1px solid $adm-border;
+    border-radius: 12px;
+    font-size: 13px;
+
+    ul {
+        margin: 0;
+        padding-left: 26px;
+    }
+
+    small {
+        color: $adm-muted;
+
+        &.is-muted {
+            color: $adm-faint;
+        }
+    }
+
+    &.is-loading {
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+        background: $adm-navy-soft;
+        color: $adm-navy;
+    }
+
+    &.is-ok {
+        border-color: rgba($adm-ok, 0.25);
+        background: #f0faf3;
+
+        .o_lqa_adm__prehead {
+            color: $adm-ok;
+        }
+    }
+
+    &.is-warn {
+        border-color: rgba($adm-warn, 0.3);
+        background: #fff8eb;
+
+        .o_lqa_adm__prehead {
+            color: $adm-warn;
+        }
+    }
+
+    &.is-danger {
+        border-color: rgba($adm-danger, 0.3);
+        background: #fff3f3;
+
+        .o_lqa_adm__prehead {
+            color: $adm-danger;
+        }
+    }
+}
+
+.o_lqa_adm__prehead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+}
+
+// Facturacion: registros.
+.o_lqa_adm__jobtools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.o_lqa_adm__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+
+    button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 30px;
+        padding: 0 12px;
+        border: 1px solid $adm-border;
+        border-radius: 999px;
+        background: #fff;
+        color: $adm-muted;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+
+        b {
+            color: $adm-ink;
+        }
+
+        &.tone-ok b {
+            color: $adm-ok;
+        }
+
+        &.tone-danger b {
+            color: $adm-danger;
+        }
+
+        &.is-on {
+            border-color: $adm-navy;
+            background: $adm-navy;
+            color: #fff;
+
+            b {
+                color: #fff;
+            }
+        }
+    }
+}
+
+.o_lqa_adm__search {
+    position: relative;
+    display: flex;
+    align-items: center;
+    margin: 0;
+
+    i {
+        position: absolute;
+        left: 10px;
+        color: $adm-faint;
+    }
+
+    input {
+        width: 220px;
+        height: 32px;
+        padding: 0 10px 0 30px;
+        border: 1px solid $adm-border;
+        border-radius: 9px;
+        outline: none;
+    }
+}
+
+.o_lqa_adm__outcome {
+    max-width: 360px;
+
+    span {
+        display: block;
+        overflow: hidden;
+        font-size: 12px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+
+        &.is-danger {
+            color: $adm-danger;
+            font-weight: 600;
+        }
+    }
+
+    small {
+        color: $adm-faint;
+        font-size: 11px;
+    }
+}
+
+.o_lqa_adm__rowactions {
+    white-space: nowrap;
+    text-align: right;
+
+    .o_lqa_adm__btn + .o_lqa_adm__btn {
+        margin-left: 6px;
+    }
+}
+
+.o_lqa_adm__working,
+.o_lqa_adm__confirm {
+    margin-right: 6px;
+    color: $adm-navy;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.o_lqa_adm__confirm {
+    color: $adm-danger;
+}
+
+@media (max-width: 1000px) {
+    .o_lqa_adm__grid {
+        grid-template-columns: 1fr;
+    }
+}

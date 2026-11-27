@@ -32,6 +32,31 @@ const emptyClientIssues = () => ({
     },
 });
 
+// Motivos de bloqueo de Invoice API en criollo (ver docs/mensajes.md).
+const ISSUE_REASON_LABELS = {
+    ALREADY_BILLED: "Ya tiene factura",
+    BILLING_VALIDATION_UNAVAILABLE: "Validación no disponible",
+    ORDER_STATUS_NOT_INVOICEABLE: "Pedido no facturable aún",
+    ORDER_DETAILS_NOT_FOUND: "Pedido sin detalle",
+    MISSING_BUYER_CUIT: "Falta CUIT del comprador",
+    MISSING_FISCAL_RAZON_SOCIAL: "Falta razón social",
+    MISSING_FISCAL_CONDICION_IMPOSITIVA: "Falta condición impositiva",
+    FISCAL_INFO_UNAVAILABLE: "AFIP/ARCA no respondió",
+    INVALID_FISCAL_DOCUMENT: "CUIT inválido",
+    XUBIO_CLIENT_ALREADY_EXISTS: "Cliente ya existe en Xubio",
+    XUBIO_EXISTING_CLIENT_LOOKUP_FAILED: "No se pudo buscar el cliente",
+    TLQV_SHEET_ITEM_NOT_FOUND: "Falta en la planilla TLQV",
+    MADRE_SHEET_ITEM_NOT_FOUND: "Falta en la planilla de Madre",
+    SPREADSHEET_SOURCE_DATA_UNAVAILABLE: "Planilla no disponible",
+    XUBIO_CLIENTE_ID_NOT_AVAILABLE: "Sin cliente en Xubio",
+    INVOICE_BUILD_FAILED: "No se pudo armar la factura",
+    INVALID_INVOICE_ISSUE_DATE: "Fecha inválida",
+    XUBIO_INVOICE_CREATION_FAILED: "Xubio rechazó la factura",
+    XUBIO_INVOICE_DATE_SEQUENCE_ERROR: "Fecha fuera de secuencia",
+    TLQV_INVOICE_FLOW_BLOCKED: "Flujo bloqueado",
+    TLQV_INVOICE_JOB_FAILED: "Falló el proceso",
+};
+
 export class LqaAccounting extends Component {
     static template = "lqa_admin_panel.Accounting";
 
@@ -113,6 +138,13 @@ export class LqaAccounting extends Component {
                 },
                 result: emptyXubio(),
             },
+            dashboard: {
+                local: null,
+                remote: null,
+                loadingLocal: false,
+                loadingRemote: false,
+                tlqv: "",
+            },
             facturacion: {
                 activeTab: "create",
                 creationMode: "single",
@@ -143,6 +175,12 @@ export class LqaAccounting extends Component {
                     loadingJobs: false,
                     jobs: [],
                     selectedJob: null,
+                    // Antes de facturar: comprobantes que ya tiene y bloqueos.
+                    precheck: { loading: false, code: "", result: null },
+                    jobFilter: "all",
+                    jobSearch: "",
+                    rowConfirmId: 0,
+                    rowRunningId: 0,
                     form: {
                         tlqvCode: "",
                         issueDate: inputDate(today),
@@ -207,6 +245,8 @@ export class LqaAccounting extends Component {
             this.lqaInitialLoad = (async () => {
                 if (this.isWorkspace) {
                     await this.loadArcaData();
+                } else if (this.isDashboard) {
+                    await this.loadDashboard();
                 }
             })();
         });
@@ -302,6 +342,226 @@ export class LqaAccounting extends Component {
 
     async openDashboard() {
         this.state.view = "dashboard";
+        await this.loadDashboard();
+    }
+
+    // ------------------------------------------------------------ dashboard
+
+    async loadDashboard() {
+        const dashboard = this.state.dashboard;
+        dashboard.loadingLocal = true;
+        dashboard.loadingRemote = true;
+        // Lo local responde al instante; Madre e Invoice API pueden tardar.
+        const local = this.orm
+            .silent.call("lqa.accounting.service", "get_admin_dashboard_local", [])
+            .then((result) => (dashboard.local = result))
+            .catch((error) => this.notifyError(error, "No se pudo cargar la actividad del panel."))
+            .finally(() => (dashboard.loadingLocal = false));
+        const remote = this.orm
+            .silent.call("lqa.accounting.service", "get_admin_dashboard_remote", [])
+            .then((result) => (dashboard.remote = result))
+            .catch((error) => {
+                dashboard.remote = {
+                    errors: { comprobantes: error?.data?.message || "Sin respuesta", issues: error?.data?.message || "Sin respuesta" },
+                };
+            })
+            .finally(() => (dashboard.loadingRemote = false));
+        await Promise.all([local, remote]);
+    }
+
+    get dashboardTlqv() {
+        const match = String(this.state.dashboard.tlqv || "").match(/TLQV[-\s]?(\d+)|^(\d+)$/i);
+        return match ? `TLQV-${match[1] || match[2]}` : "";
+    }
+
+    onDashboardKeydown(event) {
+        if (event.key === "Enter") {
+            this.quickComprobantes();
+        }
+    }
+
+    async quickInvoice() {
+        const code = this.dashboardTlqv;
+        this.state.facturacion.activeTab = "create";
+        this.state.facturacion.creationMode = "single";
+        this.state.facturacion.invoice.form.tlqvCode = code;
+        this.state.facturacion.invoice.form.dryRun = true;
+        await this.openXubioFacturacion();
+        if (code) {
+            await this.precheckTlqv();
+        }
+    }
+
+    async quickCreditNote() {
+        this.state.notasCredito.activeTab = "emit";
+        this.state.notasCredito.mode = "single";
+        this.state.notasCredito.form.tlqvCode = this.dashboardTlqv;
+        this.state.notasCredito.preview = null;
+        await this.openNotasCredito();
+    }
+
+    async quickComprobantes() {
+        this.state.xubio.filters.tlqvCode = this.dashboardTlqv;
+        this.state.xubio.filters.offset = 0;
+        await this.openArcaBilling();
+    }
+
+    async openIssuesByReason(reason) {
+        this.state.facturacion.issues.filters.reason = reason || "";
+        this.state.facturacion.issues.filters.status = "open";
+        this.state.facturacion.activeTab = "issues";
+        await this.openXubioFacturacion();
+    }
+
+    issueReasonText(reason) {
+        return ISSUE_REASON_LABELS[reason] || this.humanize(reason);
+    }
+
+    issueBarWidth(count) {
+        const max = Math.max(...(this.state.dashboard.remote?.issues?.byReason || []).map((item) => item.count), 1);
+        return `${Math.max(Math.round((count / max) * 100), 4)}%`;
+    }
+
+    jobOutcome(job) {
+        if (job.state === "failed") {
+            return job.message || "Sin detalle del error";
+        }
+        if (job.state === "done" && job.dryRun) {
+            return "Simulación lista";
+        }
+        if (job.state === "done") {
+            const total = job.invoiceTotal ? ` · ${this.formatCurrency(job.invoiceTotal)}` : "";
+            return `Factura ${job.invoiceLetter || ""} creada${total}`.replace("  ", " ");
+        }
+        return "Procesando…";
+    }
+
+    // ------------------------------------------------------------ facturacion: verificacion previa
+
+    async precheckTlqv() {
+        const invoice = this.state.facturacion.invoice;
+        const code = String(invoice.form.tlqvCode || "").trim().toUpperCase();
+        if (!code || code === invoice.precheck.code) {
+            return;
+        }
+        invoice.precheck.loading = true;
+        invoice.precheck.code = code;
+        invoice.precheck.result = null;
+        try {
+            const result = await this.orm.silent.call(
+                "lqa.accounting.service",
+                "check_tlqv_before_invoice",
+                [code]
+            );
+            if (invoice.precheck.code === code) {
+                invoice.precheck.result = result;
+            }
+        } catch (error) {
+            invoice.precheck.result = {
+                tlqvCode: code,
+                comprobantes: [],
+                issues: [],
+                errors: { general: error?.data?.message || "No se pudo verificar el TLQV." },
+            };
+        } finally {
+            invoice.precheck.loading = false;
+        }
+    }
+
+    onTlqvKeydown(event) {
+        if (event.key === "Enter") {
+            this.precheckTlqv();
+        }
+    }
+
+    onTlqvInput() {
+        const invoice = this.state.facturacion.invoice;
+        if (String(invoice.form.tlqvCode || "").trim().toUpperCase() !== invoice.precheck.code) {
+            invoice.precheck.result = null;
+            invoice.precheck.code = "";
+        }
+    }
+
+    // ------------------------------------------------------------ facturacion: registros
+
+    get invoiceJobCounts() {
+        const jobs = this.state.facturacion.invoice.jobs;
+        return {
+            all: jobs.length,
+            failed: jobs.filter((job) => job.state === "failed").length,
+            ready: jobs.filter((job) => job.state === "done" && job.dryRun).length,
+            created: jobs.filter((job) => job.state === "done" && !job.dryRun).length,
+        };
+    }
+
+    get filteredInvoiceJobs() {
+        const invoice = this.state.facturacion.invoice;
+        const query = invoice.jobSearch.trim().toUpperCase();
+        return invoice.jobs.filter((job) => {
+            if (query && !String(job.tlqvCode || "").toUpperCase().includes(query) && !String(job.user || "").toUpperCase().includes(query)) {
+                return false;
+            }
+            switch (invoice.jobFilter) {
+                case "failed":
+                    return job.state === "failed";
+                case "ready":
+                    return job.state === "done" && job.dryRun;
+                case "created":
+                    return job.state === "done" && !job.dryRun;
+                default:
+                    return true;
+            }
+        });
+    }
+
+    setInvoiceJobFilter(filter) {
+        this.state.facturacion.invoice.jobFilter = filter;
+        this.state.facturacion.invoice.rowConfirmId = 0;
+    }
+
+    // Una simulacion lista se puede crear en Xubio desde la misma fila.
+    canCreateFromSimulation(job) {
+        return job.state === "done" && job.dryRun;
+    }
+
+    async runJobAgain(job, dryRun) {
+        const invoice = this.state.facturacion.invoice;
+        if (!dryRun && invoice.rowConfirmId !== job.id) {
+            invoice.rowConfirmId = job.id;
+            return;
+        }
+        invoice.rowConfirmId = 0;
+        invoice.rowRunningId = job.id;
+        // La fecha original si sigue dentro de los 10 dias; si no, hoy.
+        const issueDate =
+            job.issueDate && job.issueDate >= this.earliestInvoiceIssueDate ? job.issueDate : this.latestInvoiceIssueDate;
+        try {
+            const result = await this.orm.call("lqa.accounting.service", "create_invoice_from_tlqv", [
+                {
+                    tlqvCode: job.tlqvCode,
+                    issueDate,
+                    dryRun,
+                    note: dryRun ? `Reintento de #${job.id}` : `Creada desde la simulación #${job.id}`,
+                },
+            ]);
+            await this.loadInvoiceCreationJobs(result.id);
+            this.notification.add(
+                result.state === "done"
+                    ? dryRun
+                        ? `${job.tlqvCode}: simulación lista.`
+                        : `${job.tlqvCode}: factura creada en Xubio.`
+                    : `${job.tlqvCode}: ${result.message || "terminó con error."}`,
+                { type: result.state === "done" ? "success" : "danger" }
+            );
+        } catch (error) {
+            this.notifyError(error, "No se pudo ejecutar.");
+        } finally {
+            invoice.rowRunningId = 0;
+        }
+    }
+
+    cancelRowConfirm() {
+        this.state.facturacion.invoice.rowConfirmId = 0;
     }
 
     async openBack() {
@@ -1437,7 +1697,7 @@ export class LqaAccounting extends Component {
             const jobs = await this.orm.call(
                 "lqa.accounting.service",
                 "get_invoice_creation_jobs",
-                [30]
+                [100]
             );
             this.state.facturacion.invoice.jobs = jobs;
             // El detalle ahora es un modal, asi que solo se abre cuando el
@@ -1465,11 +1725,16 @@ export class LqaAccounting extends Component {
             });
             return;
         }
-        const issueDate = form.issueDate || inputDate(new Date());
+        const issueDate = form.issueDate || this.formatInputDate(new Date());
         form.issueDate = issueDate;
+        const precheck = this.state.facturacion.invoice.precheck;
+        const liveWarning =
+            precheck.code === tlqvCode && precheck.result?.hasLiveInvoice
+                ? "\n\nATENCIÓN: este TLQV ya tiene una factura vigente en Xubio."
+                : "";
         if (
             !form.dryRun &&
-            !window.confirm(`Crear factura en Xubio para ${tlqvCode}? El flujo se detiene antes de ARCA.`)
+            !window.confirm(`¿Crear la factura en Xubio para ${tlqvCode}? El flujo se detiene antes de ARCA.${liveWarning}`)
         ) {
             return;
         }
@@ -1682,8 +1947,11 @@ export class LqaAccounting extends Component {
         if (Number.isNaN(date.getTime())) {
             return value;
         }
+        // Son fechas de calendario (emision, vencimiento): Madre las manda a
+        // medianoche UTC y en hora argentina caian el dia anterior.
         return new Intl.DateTimeFormat("es-AR", {
             dateStyle: "short",
+            timeZone: "UTC",
         }).format(date);
     }
 
