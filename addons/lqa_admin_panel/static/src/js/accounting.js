@@ -424,7 +424,15 @@ export class LqaAccounting extends Component {
 
     jobOutcome(job) {
         if (job.state === "failed") {
-            return job.message || "Sin detalle del error";
+            // Invoice API responde status "blocked" y deja el motivo real en
+            // blockers: "blocked" solo no le dice nada a quien factura.
+            const blockers = job.payload?.blockers;
+            const blocker = Array.isArray(blockers) ? blockers.find((item) => item?.message) : null;
+            if (blocker) {
+                return blocker.message;
+            }
+            const step = (job.steps || []).find((item) => item?.message && ["blocked", "failed", "error"].includes(item.status));
+            return step?.message || job.message || "Sin detalle del error";
         }
         if (job.state === "done" && job.dryRun) {
             return "Simulación lista";
