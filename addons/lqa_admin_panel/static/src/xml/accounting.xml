@@ -1419,7 +1419,13 @@
                                     <h2>Licuadoras: venta con entrega en el día</h2>
                                     <p>Emite la factura en Xubio con el importe y el comprador de la orden de Mercado Libre. Primero se ve la factura; recién al confirmar se emite.</p>
                                 </div>
+                                <div class="o_lqa_accounting__segmented" role="tablist">
+                                    <button type="button" t-att-class="lic.mode === 'single' ? 'is-active' : ''" t-on-click="() => this.setLicuadoraMode('single')">Una venta</button>
+                                    <button type="button" t-att-class="lic.mode === 'bulk' ? 'is-active' : ''" t-on-click="() => this.setLicuadoraMode('bulk')">Varias</button>
+                                </div>
                             </div>
+
+                            <t t-if="lic.mode === 'single'">
 
                             <div class="o_lqa_lic__form">
                                 <label>
@@ -1539,7 +1545,7 @@
                                         <div>
                                             <small t-if="res.state === 'preview'">Vista previa · todavía no se emitió</small>
                                             <small t-else="">Emitida · <t t-esc="res.created.numero"/></small>
-                                            <strong t-esc="res.invoice.cliente || 'Cliente sin nombre'"/>
+                                            <strong><t t-esc="res.invoice.cliente || 'Cliente sin nombre'"/> <span t-if="res.invoice.clienteNuevo" class="o_lqa_adm__tag">Cliente nuevo en Xubio</span></strong>
                                             <span><t t-esc="res.invoice.documento"/> · <t t-esc="res.invoice.condicion"/></span>
                                         </div>
                                         <div class="o_lqa_lic__total">
@@ -1590,6 +1596,194 @@
                                         <button type="button" class="o_lqa_adm__btn" t-on-click="licuadoraReset">Facturar otra venta</button>
                                     </footer>
                                 </article>
+                            </t>
+                            </t>
+                            <t t-else="">
+                                <t t-if="!lic.batch">
+                                    <div class="o_lqa_lic__steps">
+                                        <span><b>1</b> Se emite la factura</span>
+                                        <i class="fa fa-angle-right"/>
+                                        <span><b>2</b> Se pide el CAE</span>
+                                        <i class="fa fa-angle-right"/>
+                                        <span><b>3</b> Se envía a Mercado Libre</span>
+                                    </div>
+                                    <div class="o_lqa_lic__bulk">
+                                        <label>
+                                            <span>TLQV, uno por línea (hasta 200)</span>
+                                            <textarea rows="7" placeholder="TLQV-23500&#10;TLQV-23501&#10;23502" t-model="lic.bulkText" t-att-disabled="lic.sending ? true : undefined"/>
+                                        </label>
+                                        <div class="o_lqa_lic__bulkfoot">
+                                            <span t-if="licuadoraBulkPreview.count" class="is-ok">
+                                                <i class="fa fa-check-circle"/> <b t-esc="formatNumber(licuadoraBulkPreview.count)"/> ventas
+                                                <t t-if="licuadoraBulkPreview.ignored"> · <span class="is-warn"><t t-esc="licuadoraBulkPreview.ignored"/> líneas sin TLQV</span></t>
+                                            </span>
+                                            <span t-else="">Primero se prueba: no se emite, no se pide CAE ni se envía nada. Después mandás el lote real con las que salieron listas.</span>
+                                            <button
+                                                type="button"
+                                                class="o_lqa_adm__btn is-primary"
+                                                t-att-disabled="lic.sending or !licuadoraBulkPreview.count ? true : undefined"
+                                                t-on-click="startLicuadoraTest"
+                                            >
+                                                <i t-att-class="lic.sending ? 'fa fa-circle-o-notch fa-spin' : 'fa fa-flask'"/>
+                                                Probar<t t-if="licuadoraBulkPreview.count"> <t t-esc="formatNumber(licuadoraBulkPreview.count)"/> ventas</t>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div t-if="lic.batches.length" class="o_lqa_lic__batches">
+                                        <strong>Lotes anteriores</strong>
+                                        <button t-foreach="lic.batches" t-as="item" t-key="item.id" type="button" t-on-click="() => this.openLicuadoraBatch(item.id)">
+                                            <span>
+                                                <span t-att-class="'o_lqa_adm__tag' + (item.dryRun ? '' : ' is-real')" t-esc="item.dryRun ? 'Prueba' : 'Real'"/>
+                                                <t t-esc="item.total"/> ventas · <t t-esc="formatDate(item.createdAt)"/> · <t t-esc="item.user"/>
+                                            </span>
+                                            <small>
+                                                <t t-if="item.state === 'running'"><i class="fa fa-circle-o-notch fa-spin"/> en curso · </t>
+                                                <t t-if="item.state === 'not_found'">ya no está en Invoice API · </t>
+                                                <t t-if="item.dryRun"><t t-esc="item.results.ready || 0"/> listas</t>
+                                                <t t-else=""><t t-esc="item.results.completed || 0"/> completas</t>
+                                                · <t t-esc="item.results.blocked || 0"/> detenidas
+                                                <t t-if="item.results.failed"> · <t t-esc="item.results.failed"/> con error</t>
+                                            </small>
+                                        </button>
+                                    </div>
+                                </t>
+                                <t t-else="">
+                                    <t t-set="batch" t-value="lic.batch"/>
+                                    <t t-set="r" t-value="batch.results || {}"/>
+                                    <div class="o_lqa_lic__batchhead">
+                                        <div>
+                                            <strong>
+                                                <span t-att-class="'o_lqa_adm__tag' + (batch.dryRun ? '' : ' is-real')" t-esc="batch.dryRun ? 'Prueba' : 'Lote real'"/>
+                                                <t t-esc="batch.total"/> ventas · <t t-esc="formatDate(batch.createdAt)"/>
+                                            </strong>
+                                            <small>
+                                                <t t-if="batch.dryRun"><b class="is-ok" t-esc="r.ready || 0"/> listas · </t>
+                                                <t t-else=""><b class="is-ok" t-esc="r.completed || 0"/> completas · </t>
+                                                <b t-esc="r.blocked || 0"/> detenidas
+                                                <t t-if="r.blockedAtInvoice or r.blockedAtCae or r.blockedAtMeli">
+                                                    (<t t-esc="r.blockedAtInvoice || 0"/> en factura, <t t-esc="r.blockedAtCae || 0"/> en CAE, <t t-esc="r.blockedAtMeli || 0"/> en ML)
+                                                </t>
+                                                <t t-if="r.failed"> · <b class="is-danger" t-esc="r.failed"/> con error</t>
+                                                <t t-if="batch.pending"> · <b t-esc="batch.pending"/> en espera</t>
+                                            </small>
+                                        </div>
+                                        <div class="o_lqa_lic__batchactions">
+                                            <button type="button" class="o_lqa_adm__btn is-sm" t-att-disabled="lic.sending ? true : undefined" t-on-click="closeLicuadoraBatch">
+                                                <i class="fa fa-plus"/> Nuevo lote
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div t-if="batch.state === 'not_found'" class="o_lqa_lic__notice is-warn">
+                                        <i class="fa fa-archive"/>
+                                        <div>
+                                            <strong>No se encontró el lote en Invoice API</strong>
+                                            <small>Los lotes viejos se borran. Se muestra lo último que se consultó.</small>
+                                        </div>
+                                    </div>
+                                    <div t-if="licuadoraBatchActive" class="o_lqa_lic__wait">
+                                        <i class="fa fa-circle-o-notch fa-spin"/>
+                                        <div>
+                                            <strong><t t-esc="batch.total - batch.pending"/> de <t t-esc="batch.total"/> procesadas</strong>
+                                            <small>Se procesan de a una; cada venta tarda entre unos segundos y un minuto. Sigue aunque cierres esta pantalla.</small>
+                                            <span class="o_lqa_lic__progress"><i t-att-style="'width:' + Math.max(licuadoraBatchProgress, 3) + '%'"/></span>
+                                        </div>
+                                    </div>
+                                    <div t-if="r.failed" class="o_lqa_lic__notice is-danger">
+                                        <i class="fa fa-exclamation-triangle"/>
+                                        <div>
+                                            <strong><t t-esc="r.failed"/> ventas con error inesperado</strong>
+                                            <small>No se sabe en qué paso quedaron. Revisalas en Xubio antes de volver a mandarlas.</small>
+                                        </div>
+                                    </div>
+
+                                    <div class="o_lqa_accounting__table_wrap">
+                                        <table class="o_lqa_accounting__table o_lqa_lic__lines">
+                                            <thead>
+                                                <tr>
+                                                    <th>TLQV</th>
+                                                    <th>Estado</th>
+                                                    <th>Factura</th>
+                                                    <th>CAE</th>
+                                                    <th>Mercado Libre</th>
+                                                    <th class="is-num">Total</th>
+                                                    <th>Detalle</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <tr t-foreach="batch.jobs" t-as="job" t-key="job.tlqvCode" t-att-class="job.warning ? 'is-warning' : ''">
+                                                    <td><strong t-esc="job.tlqvCode"/></td>
+                                                    <td>
+                                                        <span t-att-class="'o_lqa_accounting__pill ' + licuadoraJobClass(job)">
+                                                            <i t-if="job.state === 'active'" class="fa fa-circle-o-notch fa-spin"/>
+                                                            <t t-esc="licuadoraJobLabel(job)"/>
+                                                        </span>
+                                                    </td>
+                                                    <t t-if="job.state === 'completed'">
+                                                        <td>
+                                                            <span t-att-class="'o_lqa_lic__step ' + licuadoraStepClass(job.invoiceStatus)" t-esc="licuadoraStepLabel('invoice', job.invoiceStatus)"/>
+                                                            <small t-if="job.numeroDocumento" class="o_lqa_lic__doc" t-esc="job.numeroDocumento"/>
+                                                        </td>
+                                                        <td>
+                                                            <span t-att-class="'o_lqa_lic__step ' + licuadoraStepClass(job.caeStatus)" t-esc="licuadoraStepLabel('cae', job.caeStatus)"/>
+                                                            <small t-if="job.cae" class="o_lqa_lic__doc" t-esc="job.cae"/>
+                                                        </td>
+                                                        <td>
+                                                            <span t-att-class="'o_lqa_lic__step ' + licuadoraStepClass(job.meliStatus)" t-esc="licuadoraStepLabel('meli', job.meliStatus)"/>
+                                                            <small t-if="job.meliOrderId" class="o_lqa_lic__doc" t-esc="job.meliOrderId"/>
+                                                        </td>
+                                                        <td class="is-num" t-esc="job.totalAmount ? formatCurrency(job.totalAmount) : '—'"/>
+                                                        <td class="o_lqa_adm__outcome">
+                                                            <span t-if="job.warning" class="is-danger" t-att-title="job.warning"><i class="fa fa-exclamation-triangle"/> <t t-esc="job.warning"/> · No reenviar.</span>
+                                                            <t t-elif="job.status === 'blocked'">
+                                                                <span class="is-danger" t-att-title="job.message" t-esc="job.message || (job.blockerCodes or []).join(', ') || 'Detenida'"/>
+                                                                <small t-esc="licuadoraStoppedLabel(job)"/>
+                                                            </t>
+                                                            <span t-elif="job.status === 'completed'">Con CAE y enviada a Mercado Libre</span>
+                                                            <span t-elif="job.status === 'ready'">Lista para procesar</span>
+                                                            <span t-else="">—</span>
+                                                        </td>
+                                                    </t>
+                                                    <t t-elif="job.state === 'failed'">
+                                                        <td colspan="4" class="o_lqa_adm__outcome">
+                                                            <span class="is-danger" t-att-title="job.failedReason" t-esc="job.failedReason || 'Error inesperado'"/>
+                                                        </td>
+                                                        <td class="o_lqa_adm__outcome"><span class="is-danger">Revisar en Xubio antes de reintentar.</span></td>
+                                                    </t>
+                                                    <t t-else="">
+                                                        <td colspan="5" class="o_lqa_adm__muted"><t t-if="job.state === 'active'">Procesando…</t><t t-else="">En espera</t></td>
+                                                    </t>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+
+                                    <footer t-if="!licuadoraBatchActive and (licuadoraReadyCodes.length or licuadoraBlockedCodes.length)" class="o_lqa_lic__bulkemit">
+                                        <t t-if="lic.confirmReal">
+                                            <span class="o_lqa_lic__confirm">
+                                                <t t-if="lic.confirmReal === 'retry'">¿Volver a mandar <t t-esc="licuadoraBlockedCodes.length"/> ventas detenidas?</t>
+                                                <t t-else="">¿Facturar, pedir el CAE y enviar a Mercado Libre <t t-esc="licuadoraReadyCodes.length"/> ventas?</t>
+                                                No hay vuelta atrás: corregir una factura después requiere una nota de crédito.
+                                            </span>
+                                            <button type="button" class="o_lqa_adm__btn" t-att-disabled="lic.sending ? true : undefined" t-on-click="cancelLicuadoraReal">Cancelar</button>
+                                            <button type="button" class="o_lqa_adm__btn is-danger" t-att-disabled="lic.sending ? true : undefined" t-on-click="confirmLicuadoraReal">
+                                                <i t-att-class="lic.sending ? 'fa fa-circle-o-notch fa-spin' : 'fa fa-check'"/> Sí, mandar
+                                            </button>
+                                        </t>
+                                        <t t-elif="batch.dryRun">
+                                            <span><b t-esc="licuadoraReadyCodes.length"/> listas de <t t-esc="batch.total"/>. Se mandan solo las listas.</span>
+                                            <button type="button" class="o_lqa_adm__btn is-primary" t-att-disabled="lic.sending ? true : undefined" t-on-click="() => this.askLicuadoraReal('send')">
+                                                <i class="fa fa-paper-plane"/> Facturar, pedir CAE y enviar (<t t-esc="licuadoraReadyCodes.length"/>)
+                                            </button>
+                                        </t>
+                                        <t t-else="">
+                                            <span><b t-esc="licuadoraBlockedCodes.length"/> detenidas. Resolvé el motivo y reenviálas: se retoma desde donde quedaron.</span>
+                                            <button type="button" class="o_lqa_adm__btn is-primary" t-att-disabled="lic.sending ? true : undefined" t-on-click="() => this.askLicuadoraReal('retry')">
+                                                <i class="fa fa-refresh"/> Reintentar las detenidas (<t t-esc="licuadoraBlockedCodes.length"/>)
+                                            </button>
+                                        </t>
+                                    </footer>
+                                </t>
                             </t>
                         </section>
 

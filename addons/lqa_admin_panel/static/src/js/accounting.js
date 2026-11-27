@@ -198,6 +198,15 @@ export class LqaAccounting extends Component {
                     confirm: false,
                     history: [],
                     loadingHistory: false,
+                    // Varias ventas encoladas.
+                    mode: "single",
+                    bulkText: "",
+                    creatingBatch: false,
+                    batch: null,
+                    batches: [],
+                    // "send" (lote real con las listas) o "retry" (las detenidas).
+                    confirmReal: "",
+                    sending: false,
                 },
                 bulk: {
                     running: false,
@@ -262,6 +271,7 @@ export class LqaAccounting extends Component {
             })();
         });
         onWillUnmount(() => {
+            clearTimeout(this.licuadoraTimer);
             this.stopQueuePolling();
             this.clearNotaCreditoTimer();
         });
@@ -748,6 +758,266 @@ export class LqaAccounting extends Component {
         return { emitted: "is-green", preview: "is-blue", blocked: "is-red", unknown: "is-amber", connection_error: "is-amber" }[job.state] || "";
     }
 
+    // ------------------------------------------------------------ entrega en el dia en lote
+    // Invoice API encola cada venta y hace factura + CAE + envio a Mercado
+    // Libre de a una. Primero se prueba (dryRun) y despues se manda el lote
+    // real solo con las que salieron listas.
+
+    async setLicuadoraMode(mode) {
+        this.state.facturacion.licuadora.mode = mode;
+        if (mode === "bulk") {
+            await this.loadLicuadoraBatches();
+            const lic = this.state.facturacion.licuadora;
+            // Si quedo un lote en curso (recargo la pagina), se retoma.
+            const running = lic.batches.find((batch) => batch.state === "running");
+            if (!lic.batch && running) {
+                await this.openLicuadoraBatch(running.id);
+            }
+        }
+    }
+
+    get licuadoraBulkPreview() {
+        const codes = new Set();
+        let ignored = 0;
+        for (const raw of String(this.state.facturacion.licuadora.bulkText || "").split(/\r?\n/)) {
+            const line = raw.trim();
+            if (!line) {
+                continue;
+            }
+            const found = [...line.matchAll(/TLQV[-\s]?(\d+)/gi)].map((match) => `TLQV-${match[1]}`);
+            if (!found.length && /^\d{3,}$/.test(line)) {
+                found.push(`TLQV-${line}`);
+            }
+            if (found.length) {
+                found.forEach((code) => codes.add(code));
+            } else {
+                ignored += 1;
+            }
+        }
+        return { count: codes.size, ignored };
+    }
+
+    async startLicuadoraBatch(codesOrText, dryRun, sourceId = false) {
+        const lic = this.state.facturacion.licuadora;
+        if (lic.sending) {
+            return;
+        }
+        lic.sending = true;
+        lic.confirmReal = "";
+        try {
+            const batch = await this.orm.call("lqa.accounting.service", "start_licuadora_batch", [
+                codesOrText,
+                dryRun,
+                sourceId,
+            ]);
+            if (dryRun) {
+                lic.bulkText = "";
+            }
+            this.setLicuadoraBatch(batch);
+            let message = dryRun
+                ? `Prueba encolada: ${batch.total} ventas. No se emite ni se envía nada.`
+                : `Lote encolado: ${batch.total} ventas. Se factura, se pide el CAE y se envía a Mercado Libre.`;
+            if (batch.duplicated) {
+                message += ` ${batch.duplicated} repetidas se contaron una vez.`;
+            }
+            if (batch.ignoredCount) {
+                message += ` Se ignoraron ${batch.ignoredCount} líneas sin TLQV.`;
+            }
+            this.notification.add(message, { type: dryRun ? "info" : "success" });
+            await this.loadLicuadoraBatches();
+        } catch (error) {
+            this.notifyError(error, "No se pudo encolar el lote.");
+        } finally {
+            lic.sending = false;
+        }
+    }
+
+    startLicuadoraTest() {
+        if (this.licuadoraBulkPreview.count) {
+            this.startLicuadoraBatch(this.state.facturacion.licuadora.bulkText, true);
+        }
+    }
+
+    // Lote real con las que la prueba dio "ready" (y sin aviso de duplicado).
+    get licuadoraReadyCodes() {
+        const batch = this.state.facturacion.licuadora.batch;
+        if (!batch?.dryRun) {
+            return [];
+        }
+        return (batch.jobs || [])
+            .filter((job) => job.state === "completed" && job.status === "ready" && !job.warning)
+            .map((job) => job.tlqvCode);
+    }
+
+    // Las detenidas se pueden reenviar: Invoice API retoma desde donde quedo.
+    // Las que tienen "warning" no: durante dos horas emitiria otra factura.
+    get licuadoraBlockedCodes() {
+        const batch = this.state.facturacion.licuadora.batch;
+        if (!batch || batch.dryRun) {
+            return [];
+        }
+        return (batch.jobs || [])
+            .filter((job) => job.state === "completed" && job.status === "blocked" && !job.warning)
+            .map((job) => job.tlqvCode);
+    }
+
+    askLicuadoraReal(kind) {
+        this.state.facturacion.licuadora.confirmReal = kind;
+    }
+
+    cancelLicuadoraReal() {
+        this.state.facturacion.licuadora.confirmReal = "";
+    }
+
+    confirmLicuadoraReal() {
+        const lic = this.state.facturacion.licuadora;
+        const codes = lic.confirmReal === "retry" ? this.licuadoraBlockedCodes : this.licuadoraReadyCodes;
+        if (codes.length && lic.batch) {
+            this.startLicuadoraBatch(codes, false, lic.batch.id);
+        }
+    }
+
+    setLicuadoraBatch(batch) {
+        const lic = this.state.facturacion.licuadora;
+        const wasRunning = lic.batch?.id === batch.id && lic.batch.state === "running";
+        lic.batch = batch;
+        if (wasRunning && batch.state !== "running") {
+            const r = batch.results || {};
+            this.notification.add(
+                batch.dryRun
+                    ? `Prueba terminada: ${r.ready || 0} listas y ${r.blocked || 0} detenidas.`
+                    : `Lote terminado: ${r.completed || 0} completas y ${r.blocked || 0} detenidas.`,
+                { type: (r.blocked || r.failed) ? "warning" : "success", sticky: !batch.dryRun }
+            );
+            this.loadLicuadoraBatches();
+        }
+        this.scheduleLicuadoraPoll();
+    }
+
+    get licuadoraBatchActive() {
+        return this.state.facturacion.licuadora.batch?.state === "running";
+    }
+
+    scheduleLicuadoraPoll() {
+        clearTimeout(this.licuadoraTimer);
+        if (this.licuadoraBatchActive) {
+            this.licuadoraTimer = setTimeout(() => this.refreshLicuadoraBatch(), 5000);
+        }
+    }
+
+    async refreshLicuadoraBatch() {
+        const lic = this.state.facturacion.licuadora;
+        if (!lic.batch) {
+            return;
+        }
+        try {
+            this.setLicuadoraBatch(
+                await this.orm.silent.call("lqa.accounting.service", "get_licuadora_batch", [lic.batch.id])
+            );
+        } catch {
+            this.scheduleLicuadoraPoll();
+        }
+    }
+
+    async loadLicuadoraBatches() {
+        try {
+            this.state.facturacion.licuadora.batches = await this.orm.silent.call(
+                "lqa.accounting.service",
+                "get_licuadora_batches",
+                [10]
+            );
+        } catch {
+            // La lista de lotes es secundaria.
+        }
+    }
+
+    async openLicuadoraBatch(batchId) {
+        try {
+            const batch = await this.orm.call("lqa.accounting.service", "get_licuadora_batch", [batchId]);
+            this.state.facturacion.licuadora.batch = null;
+            this.state.facturacion.licuadora.confirmReal = "";
+            this.setLicuadoraBatch(batch);
+        } catch (error) {
+            this.notifyError(error, "No se pudo abrir el lote.");
+        }
+    }
+
+    closeLicuadoraBatch() {
+        clearTimeout(this.licuadoraTimer);
+        this.state.facturacion.licuadora.batch = null;
+        this.state.facturacion.licuadora.confirmReal = "";
+        this.loadLicuadoraBatches();
+    }
+
+    get licuadoraBatchProgress() {
+        const batch = this.state.facturacion.licuadora.batch;
+        if (!batch?.total) {
+            return 0;
+        }
+        return Math.round(((batch.total - batch.pending) / batch.total) * 100);
+    }
+
+    licuadoraJobLabel(job) {
+        if (["waiting", "delayed", "paused"].includes(job.state)) {
+            return "En espera";
+        }
+        if (job.state === "active") {
+            return "Procesando";
+        }
+        if (job.state === "failed") {
+            return "Error";
+        }
+        if (job.warning) {
+            return "Revisar";
+        }
+        return { completed: "Completa", ready: "Lista", blocked: "Detenida" }[job.status] || job.status || "—";
+    }
+
+    licuadoraJobClass(job) {
+        if (job.state === "active") {
+            return "is-blue";
+        }
+        if (job.state === "failed" || job.warning) {
+            return "is-red";
+        }
+        if (job.state !== "completed") {
+            return "";
+        }
+        return { completed: "is-green", ready: "is-blue", blocked: "is-amber" }[job.status] || "";
+    }
+
+    licuadoraStepLabel(step, value) {
+        const labels = {
+            invoice: { created: "Emitida", existing: "Ya tenía", ready: "Se emitiría", blocked: "No se pudo" },
+            cae: { authorized: "Otorgado", already_had: "Ya tenía", ready: "Se pediría", pending: "—", blocked: "No se obtuvo" },
+            meli: { sent: "Enviada", already_sent: "Ya la tenía", ready: "Se enviaría", pending: "—", blocked: "No se pudo" },
+        };
+        return labels[step]?.[value] || (value ? value : "—");
+    }
+
+    licuadoraStepClass(value) {
+        if (["created", "existing", "authorized", "already_had", "sent", "already_sent"].includes(value)) {
+            return "is-ok";
+        }
+        if (value === "blocked") {
+            return "is-danger";
+        }
+        if (value === "ready") {
+            return "is-ready";
+        }
+        return "is-muted";
+    }
+
+    licuadoraStoppedLabel(job) {
+        return (
+            {
+                invoice: "Sin factura",
+                cae: "Con factura, sin CAE",
+                meli: "Con factura y CAE, sin enviar a ML",
+            }[job.stoppedAt] || ""
+        );
+    }
+
     jobKindLabel(job) {
         if (job.stopAfter === "meli_order") {
             return job.dryRun ? "Licuadora · vista previa" : "Licuadora";
@@ -827,7 +1097,7 @@ export class LqaAccounting extends Component {
             return;
         }
         if (tab === "licuadoras") {
-            await this.loadLicuadoraHistory();
+            await Promise.all([this.loadLicuadoraHistory(), this.loadLicuadoraBatches()]);
             return;
         }
         await this.loadInvoiceCreationJobs(

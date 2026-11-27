@@ -4596,3 +4596,257 @@ $adm-red: #ff4f5a;
         padding: 0 22px 20px;
     }
 }
+
+// Licuadoras en lote.
+.o_lqa_lic__bulk {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+
+    label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin: 0;
+
+        span {
+            color: $adm-muted;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 160px;
+            padding: 12px 14px;
+            border: 1px solid $adm-border;
+            border-radius: 12px;
+            background: #f8fafc;
+            font-family: SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            outline: none;
+            resize: vertical;
+
+            &:focus {
+                border-color: $adm-navy;
+                background: #fff;
+                box-shadow: 0 0 0 3px rgba($adm-navy, 0.12);
+            }
+        }
+    }
+}
+
+.o_lqa_lic__bulkfoot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    color: $adm-muted;
+    font-size: 13px;
+
+    .is-ok {
+        color: $adm-ok;
+
+        b {
+            color: $adm-ink;
+        }
+    }
+
+    .is-warn {
+        color: $adm-warn;
+    }
+}
+
+.o_lqa_lic__batches {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+
+    > strong {
+        margin-bottom: 4px;
+        font-size: 13px;
+    }
+
+    button {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 4px 12px;
+        padding: 10px 12px;
+        border: 1px solid $adm-border;
+        border-radius: 10px;
+        background: #fff;
+        text-align: left;
+        cursor: pointer;
+
+        &:hover {
+            border-color: $adm-navy;
+        }
+
+        small {
+            color: $adm-muted;
+        }
+    }
+}
+
+.o_lqa_lic__batchhead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+
+    > div:first-child {
+        display: flex;
+        flex-direction: column;
+
+        small {
+            color: $adm-muted;
+        }
+    }
+
+    .is-ok {
+        color: $adm-ok;
+    }
+
+    .is-danger {
+        color: $adm-danger;
+    }
+}
+
+.o_lqa_lic__batchactions {
+    display: flex;
+    gap: 8px;
+}
+
+.o_lqa_lic__progress {
+    display: block;
+    height: 6px;
+    margin-top: 6px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #fff;
+
+    i {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: $adm-navy;
+        transition: width 0.5s ease;
+    }
+}
+
+.o_lqa_lic__lines {
+    .is-check {
+        width: 36px;
+
+        input {
+            width: 16px;
+            height: 16px;
+            accent-color: $adm-navy;
+        }
+    }
+
+    .is-num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+    }
+
+    tbody tr {
+        cursor: pointer;
+    }
+}
+
+.o_lqa_lic__doc {
+    display: block;
+    color: $adm-faint;
+    font-size: 11px;
+}
+
+.o_lqa_lic__bulkemit {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: #fbfcfe;
+    border: 1px solid $adm-border;
+
+    > span:first-child {
+        margin-right: auto;
+        color: $adm-muted;
+    }
+}
+
+// Entrega en el dia en lote (Invoice API).
+.o_lqa_lic__steps {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    color: $adm-muted;
+    font-size: 13px;
+
+    span {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: $adm-navy-soft;
+        color: $adm-navy;
+        font-weight: 600;
+
+        b {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: $adm-navy;
+            color: #fff;
+            font-size: 11px;
+        }
+    }
+}
+
+.o_lqa_adm__tag.is-real {
+    background: #fdecec;
+    color: $adm-danger;
+}
+
+.o_lqa_lic__step {
+    font-size: 12px;
+    font-weight: 700;
+
+    &.is-ok {
+        color: $adm-ok;
+    }
+
+    &.is-danger {
+        color: $adm-danger;
+    }
+
+    &.is-ready {
+        color: $adm-navy;
+    }
+
+    &.is-muted {
+        color: $adm-faint;
+    }
+}
+
+.o_lqa_lic__lines tbody tr {
+    cursor: default;
+
+    &.is-warning {
+        background: #fff3f3;
+    }
+}

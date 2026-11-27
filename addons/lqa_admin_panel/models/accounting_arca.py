@@ -2,6 +2,7 @@ import base64
 import csv
 import io
 import json
+import logging
 import os
 import re
 from datetime import datetime, timedelta
@@ -15,6 +16,8 @@ from odoo import _, api, fields, models
 from odoo.exceptions import AccessError, UserError
 
 from .http_errors import describe_request_exception, log_http_failure, http_timeout
+
+_logger = logging.getLogger(__name__)
 
 
 class LqaAccountingTlqvClientJob(models.Model):
@@ -140,6 +143,48 @@ class LqaAccountingInvoiceCreationJob(models.Model):
     response_payload = fields.Text(readonly=True)
     started_at = fields.Datetime(readonly=True)
     finished_at = fields.Datetime(readonly=True)
+
+
+class LqaAccountingLicuadoraBatch(models.Model):
+    """Lote de "entrega en el dia" encolado en Invoice API: factura, pide el
+    CAE y envia la factura a Mercado Libre. La cola vive en Invoice API; aca
+    queda el batchId y la ultima foto del avance."""
+
+    _name = "lqa.accounting.licuadora.batch"
+    _description = "Lote de entrega en el dia (Invoice API)"
+    _order = "create_date desc, id desc"
+
+    batch_id = fields.Char(required=True, readonly=True, index=True)
+    user_id = fields.Many2one(
+        "res.users",
+        required=True,
+        readonly=True,
+        default=lambda self: self.env.user,
+        index=True,
+    )
+    dry_run = fields.Boolean(readonly=True)
+    issue_date = fields.Date(readonly=True)
+    state = fields.Selection(
+        selection=[
+            ("running", "En curso"),
+            ("done", "Terminado"),
+            ("not_found", "Ya no existe en Invoice API"),
+        ],
+        default="running",
+        required=True,
+        readonly=True,
+        index=True,
+    )
+    source_batch_id = fields.Many2one(
+        "lqa.accounting.licuadora.batch", readonly=True, ondelete="set null"
+    )
+    total_requested = fields.Integer(readonly=True)
+    total_queued = fields.Integer(readonly=True)
+    total_duplicated = fields.Integer(readonly=True)
+    tlqv_codes_json = fields.Text(readonly=True)
+    results_snapshot = fields.Text(readonly=True)
+    jobs_snapshot = fields.Text(readonly=True)
+    last_checked_at = fields.Datetime(readonly=True)
 
 
 class LqaAccountingInvoiceBatch(models.Model):
@@ -1622,8 +1667,15 @@ class LqaAccountingService(models.AbstractModel):
             "INVALID_INVOICE_ISSUE_DATE",
             "XUBIO_INVOICE_DATE_SEQUENCE_ERROR",
             "XUBIO_INVOICE_CREATION_FAILED",
+            "MISSING_FISCAL_RAZON_SOCIAL",
+            "MISSING_FISCAL_CONDICION_IMPOSITIVA",
+            "XUBIO_EXISTING_CLIENT_NOT_FOUND",
         },
-        "cancelled": {"MELI_ORDER_CANCELLED"},
+        "cancelled": {
+            "MELI_ORDER_CANCELLED",
+            "MELI_ORDER_CURRENCY_NOT_SUPPORTED",
+            "MELI_ORDER_TOTAL_INVALID",
+        },
         "unknown_outcome": {"XUBIO_INVOICE_OUTCOME_UNKNOWN"},
     }
 
@@ -1779,7 +1831,8 @@ class LqaAccountingService(models.AbstractModel):
         build = payload.get("invoiceBuild") if isinstance(payload.get("invoiceBuild"), dict) else {}
         invoice = build.get("invoice") if isinstance(build.get("invoice"), dict) else {}
         items = [item for item in self._response_items(invoice.get("items")) if isinstance(item, dict)]
-        fiscal = ((payload.get("clienteFlow") or {}).get("fiscalInfo")) or {}
+        cliente_flow = payload.get("clienteFlow") if isinstance(payload.get("clienteFlow"), dict) else {}
+        fiscal = cliente_flow.get("fiscalInfo") or {}
         created = ((payload.get("createdInvoice") or {}).get("invoice")) or {}
         letter = self._clean((build.get("invoiceLetter") or {}).get("letter") or invoice.get("letter")).upper()
         total = self._as_float(build.get("totalAmount"))
@@ -1823,6 +1876,8 @@ class LqaAccountingService(models.AbstractModel):
             "amountCheck": payload.get("amountCheck") if isinstance(payload.get("amountCheck"), dict) else None,
             "invoice": {
                 "cliente": self._clean(fiscal.get("razonSocial")),
+                # created = se dio de alta recien en Xubio; already_exists = ya estaba.
+                "clienteNuevo": self._clean(cliente_flow.get("status")) == "created",
                 "documento": self._clean(fiscal.get("documentoNro")),
                 "condicion": self._clean(fiscal.get("condicionImpositiva")),
                 "letra": letter,
@@ -1867,6 +1922,204 @@ class LqaAccountingService(models.AbstractModel):
             }
             for job in jobs
         ]
+
+    # ------------------------------------------------------------------
+    # Entrega en el dia en lote: Invoice API encola cada venta y hace, de a
+    # una, factura + CAE + envio a Mercado Libre. El panel manda la lista,
+    # guarda el batchId y consulta el avance.
+    # ------------------------------------------------------------------
+
+    LICUADORA_BULK_PATH = "/internal/tlqv-invoice/facturas/bulk/entrega-en-el-dia"
+    LICUADORA_BATCH_MAX = 200
+    BARE_TLQV_PATTERN = re.compile(r"^\s*(\d{3,})\s*$")
+
+    def _parse_licuadora_codes(self, text):
+        codes = []
+        ignored = []
+        lines = text if isinstance(text, list) else str(text or "").splitlines()
+        for raw in lines:
+            line = str(raw or "").strip()
+            if not line:
+                continue
+            found = [f"TLQV-{number}" for number in self.TLQV_PATTERN.findall(line)]
+            if not found:
+                bare = self.BARE_TLQV_PATTERN.match(line)
+                if bare:
+                    found = [f"TLQV-{bare.group(1)}"]
+            if found:
+                codes.extend(found)
+            else:
+                ignored.append(line[:60])
+        return list(dict.fromkeys(codes)), ignored
+
+    def _get_licuadora_batch(self, batch_id):
+        batch = self.env["lqa.accounting.licuadora.batch"].sudo().browse(
+            self._as_int(batch_id, 0)
+        ).exists()
+        if not batch:
+            raise UserError(_("El lote no existe."))
+        if (
+            not self.env.user.has_group("lqa_admin_panel.group_lqa_admin")
+            and batch.user_id != self.env.user
+        ):
+            raise AccessError(_("No tenés acceso a este lote."))
+        return batch
+
+    @api.model
+    def start_licuadora_batch(self, text, dry_run=True, source_batch_id=False):
+        """Encola en Invoice API. dry_run=True es la prueba: no emite, no pide
+        CAE ni envia nada (solo puede dar de alta al cliente en Xubio)."""
+        self._check_access()
+        dry_run = dry_run is not False
+        codes, ignored = self._parse_licuadora_codes(text)
+        if not codes:
+            raise UserError(_("No encontré ningún TLQV. Pegá uno por línea, por ejemplo TLQV-23500."))
+        if len(codes) > self.LICUADORA_BATCH_MAX:
+            raise UserError(
+                _("Podés mandar hasta %(max)s ventas por lote y pegaste %(count)s.")
+                % {"max": self.LICUADORA_BATCH_MAX, "count": len(codes)}
+            )
+        # Un lote a la vez por persona: se procesan de a una entre todos los
+        # lotes, asi que dos lotes no aceleran nada y confunden.
+        active = self.env["lqa.accounting.licuadora.batch"].sudo().search(
+            [("user_id", "=", self.env.user.id), ("state", "=", "running")]
+        )
+        for batch in active:
+            self._refresh_licuadora_batch(batch)
+        if active.filtered(lambda batch: batch.state == "running"):
+            raise UserError(_("Ya tenés un lote en curso. Esperá a que termine para mandar otro."))
+
+        issue_date = self._argentina_today()
+        body = {
+            "tlqvCodes": codes,
+            "dryRun": dry_run,
+            "issueDate": fields.Date.to_string(issue_date),
+        }
+        response = self._request_json(
+            "POST",
+            self._join_url(self._invoice_base_url(), self.LICUADORA_BULK_PATH),
+            payload=body,
+            headers=self._invoice_headers(),
+            timeout=60,
+        )
+        payload = response["payload"] if isinstance(response["payload"], dict) else {}
+        if response["status_code"] == 503:
+            raise UserError(_("La cola de Invoice API no está disponible. No se encoló nada: probá de nuevo en un rato."))
+        batch_id = self._clean(payload.get("batchId"))
+        if not response["ok"] or not batch_id:
+            message = self._clean(payload.get("message") or payload.get("error") or response.get("text"))
+            raise UserError(
+                _("Invoice API no pudo encolar el lote (%(code)s): %(message)s")
+                % {"code": response["status_code"], "message": message or _("sin detalle")}
+            )
+        source = False
+        if source_batch_id:
+            source = self._get_licuadora_batch(source_batch_id).id
+        batch = self.env["lqa.accounting.licuadora.batch"].sudo().create(
+            {
+                "batch_id": batch_id,
+                "user_id": self.env.user.id,
+                "dry_run": bool(payload.get("dryRun", dry_run)),
+                "issue_date": issue_date,
+                "source_batch_id": source,
+                "total_requested": self._as_int(payload.get("totalRequested"), len(codes)),
+                "total_queued": self._as_int(payload.get("totalQueued"), len(codes)),
+                "total_duplicated": self._as_int(payload.get("totalDuplicated"), 0),
+                "tlqv_codes_json": self._json_dumps(payload.get("tlqvCodes") or codes),
+            }
+        )
+        data = self._licuadora_batch_to_dict(batch)
+        data["ignored"] = ignored[:20]
+        data["ignoredCount"] = len(ignored)
+        return data
+
+    def _refresh_licuadora_batch(self, batch):
+        response = self._request_json(
+            "GET",
+            self._join_url(
+                self._invoice_base_url(),
+                f"{self.LICUADORA_BULK_PATH}/{quote(batch.batch_id, safe='')}",
+            ),
+            headers=self._invoice_headers(),
+            timeout=30,
+        )
+        payload = response["payload"] if isinstance(response["payload"], dict) else {}
+        if not response["ok"]:
+            message = self._clean(payload.get("message") or payload.get("error") or response.get("text"))
+            raise UserError(
+                _("Invoice API no devolvió el avance del lote (%(code)s): %(message)s")
+                % {"code": response["status_code"], "message": message or _("sin detalle")}
+            )
+        if payload.get("found") is False:
+            # Invoice API borra los lotes viejos: queda la ultima foto guardada.
+            batch.write({"state": "not_found", "last_checked_at": fields.Datetime.now()})
+            return batch
+        results = payload.get("results") if isinstance(payload.get("results"), dict) else {}
+        jobs = [job for job in self._response_items(payload.get("jobs")) if isinstance(job, dict)]
+        pending = self._as_int(results.get("pending"), 0)
+        batch.write(
+            {
+                "state": "done" if pending == 0 and jobs else "running",
+                "results_snapshot": self._json_dumps(results),
+                "jobs_snapshot": self._json_dumps(jobs),
+                "last_checked_at": fields.Datetime.now(),
+            }
+        )
+        return batch
+
+    @api.model
+    def get_licuadora_batch(self, batch_id, refresh=True):
+        self._check_access()
+        batch = self._get_licuadora_batch(batch_id)
+        if refresh and batch.state == "running":
+            self._refresh_licuadora_batch(batch)
+        return self._licuadora_batch_to_dict(batch)
+
+    @api.model
+    def get_licuadora_batches(self, limit=10):
+        self._check_access()
+        domain = []
+        if not self.env.user.has_group("lqa_admin_panel.group_lqa_admin"):
+            domain.append(("user_id", "=", self.env.user.id))
+        batches = self.env["lqa.accounting.licuadora.batch"].sudo().search(
+            domain, limit=min(max(self._as_int(limit, 10), 1), 50)
+        )
+        return [self._licuadora_batch_to_dict(batch, with_jobs=False) for batch in batches]
+
+    def _licuadora_batch_to_dict(self, batch, with_jobs=True):
+        results = self._loads(batch.results_snapshot)
+        try:
+            jobs = json.loads(batch.jobs_snapshot or "[]")
+        except (TypeError, ValueError):
+            jobs = []
+        try:
+            codes = json.loads(batch.tlqv_codes_json or "[]")
+        except (TypeError, ValueError):
+            codes = []
+        total = batch.total_queued or len(codes)
+        pending = self._as_int(results.get("pending"), total) if results else total
+        data = {
+            "id": batch.id,
+            "batchId": batch.batch_id,
+            "dryRun": batch.dry_run,
+            "state": batch.state,
+            "issueDate": fields.Date.to_string(batch.issue_date) if batch.issue_date else "",
+            "user": batch.user_id.name,
+            "createdAt": fields.Datetime.to_string(batch.create_date),
+            "lastCheckedAt": fields.Datetime.to_string(batch.last_checked_at) if batch.last_checked_at else "",
+            "sourceId": batch.source_batch_id.id or False,
+            "total": total,
+            "duplicated": batch.total_duplicated,
+            "pending": pending,
+            "results": results,
+        }
+        if with_jobs:
+            # Las que todavia no aparecen en el avance se muestran "En espera".
+            seen = {job.get("tlqvCode") for job in jobs}
+            data["jobs"] = jobs + [
+                {"tlqvCode": code, "state": "waiting"} for code in codes if code not in seen
+            ]
+        return data
 
     # ------------------------------------------------------------------
     # Dashboard de Administracion
