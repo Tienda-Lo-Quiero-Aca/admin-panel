@@ -165,7 +165,7 @@
                                 <div class="o_lqa_adm__job">
                                     <span t-att-class="'o_lqa_accounting__pill ' + stateClass(job.state)" t-esc="stateLabel(job.state)"/>
                                     <div>
-                                        <strong><t t-esc="job.tlqvCode"/> <small t-esc="job.dryRun ? 'Simulación' : 'Creación'"/></strong>
+                                        <strong><t t-esc="job.tlqvCode"/> <small t-esc="jobKindLabel(job)"/></strong>
                                         <small t-att-class="job.state === 'failed' ? 'is-danger' : ''" t-att-title="jobOutcome(job)" t-esc="jobOutcome(job)"/>
                                     </div>
                                     <small class="o_lqa_adm__when"><t t-esc="formatDate(job.createdAt)"/><br/><t t-esc="job.user"/></small>
@@ -655,6 +655,15 @@
                             t-on-click="() => this.setFacturacionTab('issues')"
                         >
                             Comprobantes fallidos
+                        </button>
+                        <button
+                            type="button"
+                            role="tab"
+                            t-att-aria-selected="state.facturacion.activeTab === 'licuadoras' ? 'true' : 'false'"
+                            t-att-class="state.facturacion.activeTab === 'licuadoras' ? 'is-active' : ''"
+                            t-on-click="() => this.setFacturacionTab('licuadoras')"
+                        >
+                            Licuadoras
                         </button>
                     </nav>
 
@@ -1400,6 +1409,232 @@
                                 </div>
                             </section>
                         </t>
+                    </t>
+
+                    <t t-if="state.facturacion.activeTab === 'licuadoras'">
+                        <t t-set="lic" t-value="state.facturacion.licuadora"/>
+                        <section class="o_lqa_accounting__panel o_lqa_lic">
+                            <div class="o_lqa_accounting__panel_head">
+                                <div>
+                                    <h2>Licuadoras: venta con entrega en el día</h2>
+                                    <p>Emite la factura en Xubio con el importe y el comprador de la orden de Mercado Libre. Primero se ve la factura; recién al confirmar se emite.</p>
+                                </div>
+                            </div>
+
+                            <div class="o_lqa_lic__form">
+                                <label>
+                                    <span>Código TLQV</span>
+                                    <input
+                                        type="text"
+                                        placeholder="TLQV-23500"
+                                        t-model="lic.tlqv"
+                                        t-on-input="onLicuadoraInput"
+                                        t-on-keydown="onLicuadoraKeydown"
+                                        t-att-disabled="lic.running ? true : undefined"
+                                    />
+                                </label>
+                                <button
+                                    type="button"
+                                    class="o_lqa_adm__btn is-primary"
+                                    t-att-disabled="lic.running or !licuadoraCode ? true : undefined"
+                                    t-on-click="licuadoraPreview"
+                                >
+                                    <i t-att-class="lic.running === 'preview' ? 'fa fa-circle-o-notch fa-spin' : 'fa fa-eye'"/>
+                                    <t t-if="lic.running === 'preview'">Armando la factura…</t>
+                                    <t t-else="">Ver factura</t>
+                                </button>
+                                <small>Se emite con fecha de hoy (Argentina). La vista previa ya crea el cliente en Xubio si no existía, pero no emite nada.</small>
+                            </div>
+
+                            <div t-if="lic.running" class="o_lqa_lic__wait">
+                                <i class="fa fa-circle-o-notch fa-spin"/>
+                                <div>
+                                    <strong t-if="lic.running === 'emit'">Emitiendo en Xubio… no cierres esta pantalla.</strong>
+                                    <strong t-else="">Consultando Mercado Libre, la planilla de costos y Xubio…</strong>
+                                    <small>Puede tardar hasta 2 minutos.</small>
+                                </div>
+                            </div>
+
+                            <!-- Ya emitida o con resultado desconocido (de antes) -->
+                            <div t-if="lic.status and lic.status.emitted" class="o_lqa_lic__notice is-ok">
+                                <i class="fa fa-check-circle"/>
+                                <div>
+                                    <strong><t t-esc="lic.status.numero || 'La factura'"/> ya se emitió desde el panel para esta venta.</strong>
+                                    <small><t t-esc="formatDate(lic.status.at)"/> · <t t-esc="lic.status.user"/>. No se puede volver a emitir. Si falta, pedí el CAE en Xubio.</small>
+                                </div>
+                            </div>
+                            <div t-elif="lic.status and lic.status.unknown" class="o_lqa_lic__notice is-danger">
+                                <i class="fa fa-exclamation-triangle"/>
+                                <div>
+                                    <strong>Hay una emisión anterior sin resultado conocido</strong>
+                                    <small>El <t t-esc="formatDate(lic.status.unknown.at)"/> (<t t-esc="lic.status.unknown.user"/>) Xubio no respondió o se cortó la conexión. Puede que la factura exista: buscala en Xubio antes de emitir. Si se emite dos veces quedan dos facturas de la misma venta.</small>
+                                    <label class="o_lqa_lic__verify">
+                                        <input type="checkbox" t-model="lic.verified"/>
+                                        Ya busqué en Xubio y la factura de esta venta no existe
+                                    </label>
+                                </div>
+                            </div>
+
+                            <t t-if="lic.result">
+                                <t t-set="res" t-value="lic.result"/>
+
+                                <!-- Emitida -->
+                                <div t-if="res.state === 'emitted'" class="o_lqa_lic__done">
+                                    <i class="fa fa-check"/>
+                                    <div>
+                                        <strong>Factura <t t-esc="res.created.numero"/> emitida.</strong>
+                                        <span>Falta pedir el CAE en Xubio.</span>
+                                    </div>
+                                </div>
+
+                                <!-- Resultado desconocido -->
+                                <div t-if="res.state === 'unknown'" class="o_lqa_lic__notice is-danger">
+                                    <i class="fa fa-question-circle"/>
+                                    <div>
+                                        <strong>No se sabe si la factura se emitió</strong>
+                                        <small t-esc="res.message"/>
+                                        <small>Buscá la factura de <t t-esc="res.tlqvCode"/> en Xubio antes de volver a emitir. No se reintenta solo.</small>
+                                    </div>
+                                </div>
+
+                                <!-- Sin respuesta en la vista previa -->
+                                <div t-if="res.state === 'connection_error'" class="o_lqa_lic__notice is-warn">
+                                    <i class="fa fa-plug"/>
+                                    <div>
+                                        <strong>Invoice API no respondió</strong>
+                                        <small t-esc="res.message"/>
+                                    </div>
+                                    <button type="button" class="o_lqa_adm__btn is-sm" t-att-disabled="lic.running ? true : undefined" t-on-click="licuadoraPreview"><i class="fa fa-refresh"/> Reintentar</button>
+                                </div>
+
+                                <!-- Bloqueos -->
+                                <t t-if="res.blockers.length">
+                                    <div t-foreach="res.blockers" t-as="blocker" t-key="blocker_index" t-att-class="'o_lqa_lic__blocker is-' + blocker.kind">
+                                        <div class="o_lqa_lic__blockerhead">
+                                            <strong t-esc="licuadoraBlockerTitle(blocker)"/>
+                                            <code t-esc="blocker.code"/>
+                                        </div>
+                                        <p t-if="blocker.message" t-esc="blocker.message"/>
+                                        <div t-if="blocker.code === 'INVOICE_TOTAL_SALE_PRICE_MISMATCH' and res.amountCheck" class="o_lqa_lic__amounts">
+                                            <span>Mercado Libre <b t-esc="formatCurrency(res.amountCheck.meliTotalAmount)"/></span>
+                                            <span>Planilla de costos <b t-esc="formatCurrency(res.amountCheck.costosSalePrice)"/></span>
+                                            <span>Diferencia <b t-esc="formatCurrency((res.amountCheck.differenceInCents || 0) / 100)"/></span>
+                                        </div>
+                                    </div>
+                                    <div t-if="res.state === 'blocked' and licuadoraHasTemporary" class="o_lqa_lic__actions">
+                                        <button type="button" class="o_lqa_adm__btn" t-att-disabled="lic.running ? true : undefined" t-on-click="licuadoraPreview">
+                                            <i class="fa fa-refresh"/> Reintentar
+                                        </button>
+                                    </div>
+                                </t>
+                                <div t-elif="res.state === 'blocked'" class="o_lqa_lic__blocker is-other">
+                                    <div class="o_lqa_lic__blockerhead"><strong>No se pudo facturar</strong></div>
+                                    <p t-esc="res.message or 'Invoice API no informó el motivo.'"/>
+                                </div>
+
+                                <!-- Factura (vista previa o emitida) -->
+                                <article t-if="res.invoice and (res.state === 'preview' or res.state === 'emitted')" class="o_lqa_lic__invoice">
+                                    <header>
+                                        <span t-att-class="'o_lqa_lic__letter is-' + (res.invoice.letra || 'x').toLowerCase()" t-esc="res.invoice.letra || '?'"/>
+                                        <div>
+                                            <small t-if="res.state === 'preview'">Vista previa · todavía no se emitió</small>
+                                            <small t-else="">Emitida · <t t-esc="res.created.numero"/></small>
+                                            <strong t-esc="res.invoice.cliente || 'Cliente sin nombre'"/>
+                                            <span><t t-esc="res.invoice.documento"/> · <t t-esc="res.invoice.condicion"/></span>
+                                        </div>
+                                        <div class="o_lqa_lic__total">
+                                            <small>Total</small>
+                                            <strong t-esc="formatCurrency(res.invoice.total)"/>
+                                        </div>
+                                    </header>
+                                    <dl>
+                                        <div><dt>Venta</dt><dd t-esc="res.tlqvCode"/></div>
+                                        <div><dt>Fecha</dt><dd t-esc="formatDateOnly(res.invoice.fecha)"/></div>
+                                        <div><dt>Orden de Mercado Libre</dt><dd t-esc="res.invoice.meliOrderIds.join(', ') || '—'"/></div>
+                                        <div t-if="res.invoice.letra === 'A'"><dt>Neto</dt><dd t-esc="formatCurrency(res.invoice.neto)"/></div>
+                                        <div t-if="res.invoice.letra === 'A'"><dt>IVA</dt><dd t-esc="formatCurrency(res.invoice.iva)"/></div>
+                                    </dl>
+                                    <ul class="o_lqa_lic__items">
+                                        <li t-foreach="res.invoice.items" t-as="item" t-key="item_index">
+                                            <span t-esc="item.description"/>
+                                            <b t-esc="formatCurrency(item.unitPrice)"/>
+                                        </li>
+                                    </ul>
+                                    <div t-if="res.amountCheck" class="o_lqa_lic__check">
+                                        <i class="fa fa-check-circle"/>
+                                        Importe de Mercado Libre y planilla de costos coinciden
+                                        (<t t-esc="formatCurrency(res.amountCheck.meliTotalAmount)"/>).
+                                    </div>
+                                    <footer t-if="res.state === 'preview'">
+                                        <t t-if="lic.confirm">
+                                            <span class="o_lqa_lic__confirm">¿Emitir la factura <t t-esc="res.invoice.letra"/> por <t t-esc="formatCurrency(res.invoice.total)"/> a <t t-esc="res.invoice.cliente"/>?</span>
+                                            <button type="button" class="o_lqa_adm__btn" t-on-click="cancelLicuadoraConfirm">Cancelar</button>
+                                            <button type="button" class="o_lqa_adm__btn is-danger" t-on-click="licuadoraEmit">
+                                                <i class="fa fa-check"/> Sí, emitir
+                                            </button>
+                                        </t>
+                                        <t t-else="">
+                                            <small t-if="lic.status and lic.status.unknown and !lic.verified">Confirmá arriba que la buscaste en Xubio para poder emitir.</small>
+                                            <button
+                                                type="button"
+                                                class="o_lqa_adm__btn is-primary"
+                                                t-att-disabled="!licuadoraCanEmit ? true : undefined"
+                                                t-on-click="licuadoraEmit"
+                                            >
+                                                <i t-att-class="lic.running === 'emit' ? 'fa fa-circle-o-notch fa-spin' : 'fa fa-paper-plane'"/>
+                                                Emitir factura
+                                            </button>
+                                        </t>
+                                    </footer>
+                                    <footer t-else="">
+                                        <button type="button" class="o_lqa_adm__btn" t-on-click="licuadoraReset">Facturar otra venta</button>
+                                    </footer>
+                                </article>
+                            </t>
+                        </section>
+
+                        <section class="o_lqa_accounting__panel o_lqa_lic__history">
+                            <div class="o_lqa_accounting__panel_head">
+                                <div>
+                                    <h2>Historial de licuadoras</h2>
+                                    <p>Vistas previas y emisiones hechas desde el panel.</p>
+                                </div>
+                                <button type="button" class="o_lqa_accounting__ghost" t-on-click="loadLicuadoraHistory">
+                                    <i t-att-class="lic.loadingHistory ? 'fa fa-spinner fa-spin' : 'fa fa-refresh'"/>
+                                    Actualizar
+                                </button>
+                            </div>
+                            <div t-if="!lic.history.length" class="o_lqa_adm__muted">Todavía no hay licuadoras facturadas desde el panel.</div>
+                            <div t-else="" class="o_lqa_accounting__table_wrap">
+                                <table class="o_lqa_accounting__table">
+                                    <thead>
+                                        <tr>
+                                            <th>Fecha</th>
+                                            <th>TLQV</th>
+                                            <th>Paso</th>
+                                            <th>Estado</th>
+                                            <th>Resultado</th>
+                                            <th>Usuario</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr t-foreach="lic.history" t-as="job" t-key="job.jobId" t-on-click="() => this.openLicuadoraFromHistory(job)" title="Volver a ver esta venta">
+                                            <td t-esc="formatDate(job.createdAt)"/>
+                                            <td><strong t-esc="job.tlqvCode"/></td>
+                                            <td t-esc="job.dryRun ? 'Vista previa' : 'Emisión'"/>
+                                            <td><span t-att-class="'o_lqa_accounting__pill ' + licuadoraStateClass(job)" t-esc="licuadoraStateLabel(job)"/></td>
+                                            <td class="o_lqa_adm__outcome">
+                                                <span t-if="job.created">Factura <t t-esc="job.created.numero"/> · falta CAE</span>
+                                                <span t-elif="job.blockers.length" class="is-danger" t-att-title="job.blockers[0].message" t-esc="job.blockers[0].message or job.blockers[0].code"/>
+                                                <span t-elif="job.invoice"><t t-esc="job.invoice.letra"/> · <t t-esc="formatCurrency(job.invoice.total)"/> · <t t-esc="job.invoice.cliente"/></span>
+                                                <span t-else="" t-att-class="job.message ? 'is-danger' : ''" t-esc="job.message or '—'"/>
+                                            </td>
+                                            <td t-esc="job.user"/>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </section>
                     </t>
 
                     <t t-if="state.facturacion.activeTab === 'issues'">

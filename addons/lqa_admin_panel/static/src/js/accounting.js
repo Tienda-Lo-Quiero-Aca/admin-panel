@@ -188,6 +188,17 @@ export class LqaAccounting extends Component {
                         note: "",
                     },
                 },
+                // Licuadoras: factura desde la orden de Mercado Libre.
+                licuadora: {
+                    tlqv: "",
+                    running: "",
+                    result: null,
+                    status: null,
+                    verified: false,
+                    confirm: false,
+                    history: [],
+                    loadingHistory: false,
+                },
                 bulk: {
                     running: false,
                     result: null,
@@ -572,6 +583,178 @@ export class LqaAccounting extends Component {
         this.state.facturacion.invoice.rowConfirmId = 0;
     }
 
+    // ------------------------------------------------------------ licuadoras
+
+    get licuadoraCode() {
+        const match = String(this.state.facturacion.licuadora.tlqv || "").match(/TLQV[-\s]?(\d+)|^\s*(\d+)\s*$/i);
+        return match ? `TLQV-${match[1] || match[2]}` : "";
+    }
+
+    onLicuadoraInput() {
+        const lic = this.state.facturacion.licuadora;
+        if (lic.result && lic.result.tlqvCode !== this.licuadoraCode) {
+            lic.result = null;
+            lic.status = null;
+            lic.verified = false;
+            lic.confirm = false;
+        }
+    }
+
+    onLicuadoraKeydown(event) {
+        if (event.key === "Enter") {
+            this.licuadoraPreview();
+        }
+    }
+
+    async licuadoraPreview() {
+        const lic = this.state.facturacion.licuadora;
+        const code = this.licuadoraCode;
+        if (!code) {
+            this.notification.add("Ingresá un TLQV, por ejemplo TLQV-23500.", { type: "warning" });
+            return;
+        }
+        if (lic.running) {
+            return;
+        }
+        lic.running = "preview";
+        lic.confirm = false;
+        lic.result = null;
+        try {
+            // Primero lo que ya paso con esta venta (emitida o resultado
+            // desconocido); despues la vista previa, que puede tardar.
+            lic.status = await this.orm.call("lqa.accounting.service", "get_licuadora_status", [code]);
+            lic.result = await this.orm.call("lqa.accounting.service", "licuadora_invoice", [code, true, false]);
+        } catch (error) {
+            this.notifyError(error, "No se pudo armar la vista previa.");
+        } finally {
+            lic.running = "";
+            this.loadLicuadoraHistory();
+        }
+    }
+
+    get licuadoraCanEmit() {
+        const lic = this.state.facturacion.licuadora;
+        return (
+            !lic.running &&
+            lic.result?.state === "preview" &&
+            !lic.status?.emitted &&
+            (!lic.status?.unknown || lic.verified)
+        );
+    }
+
+    async licuadoraEmit() {
+        const lic = this.state.facturacion.licuadora;
+        if (!this.licuadoraCanEmit) {
+            return;
+        }
+        if (!lic.confirm) {
+            lic.confirm = true;
+            return;
+        }
+        lic.confirm = false;
+        lic.running = "emit";
+        const code = lic.result.tlqvCode;
+        try {
+            lic.result = await this.orm.call("lqa.accounting.service", "licuadora_invoice", [code, false, lic.verified]);
+            lic.status = await this.orm.call("lqa.accounting.service", "get_licuadora_status", [code]);
+            if (lic.result.state === "emitted") {
+                this.notification.add(
+                    `Factura ${lic.result.created.numero} emitida. Falta pedir el CAE en Xubio.`,
+                    { type: "success", sticky: true }
+                );
+            } else if (lic.result.state === "unknown") {
+                this.notification.add(
+                    "No se sabe si la factura se emitió: buscala en Xubio antes de volver a intentar.",
+                    { type: "danger", sticky: true }
+                );
+            }
+        } catch (error) {
+            this.notifyError(error, "No se pudo emitir la factura.");
+        } finally {
+            lic.running = "";
+            this.loadLicuadoraHistory();
+        }
+    }
+
+    cancelLicuadoraConfirm() {
+        this.state.facturacion.licuadora.confirm = false;
+    }
+
+    licuadoraReset() {
+        const lic = this.state.facturacion.licuadora;
+        lic.tlqv = "";
+        lic.result = null;
+        lic.status = null;
+        lic.verified = false;
+        lic.confirm = false;
+    }
+
+    async loadLicuadoraHistory() {
+        const lic = this.state.facturacion.licuadora;
+        lic.loadingHistory = true;
+        try {
+            lic.history = await this.orm.silent.call("lqa.accounting.service", "get_licuadora_jobs", [30]);
+        } catch {
+            lic.history = lic.history || [];
+        } finally {
+            lic.loadingHistory = false;
+        }
+    }
+
+    openLicuadoraFromHistory(job) {
+        const lic = this.state.facturacion.licuadora;
+        lic.tlqv = job.tlqvCode;
+        lic.result = null;
+        lic.status = null;
+        lic.verified = false;
+        this.licuadoraPreview();
+    }
+
+    get licuadoraHasTemporary() {
+        return (this.state.facturacion.licuadora.result?.blockers || []).some((item) => item.kind === "temporary");
+    }
+
+    licuadoraBlockerTitle(blocker) {
+        return (
+            {
+                billed: "Esta venta ya está facturada",
+                temporary: "Problema temporal",
+                fix: "Hay que corregir un dato",
+                cancelled: "La orden está cancelada: no se factura",
+                unknown_outcome: "Xubio no respondió al emitir",
+            }[blocker.kind] || "No se pudo facturar"
+        );
+    }
+
+    licuadoraStateLabel(job) {
+        if (job.processing) {
+            return "Procesando";
+        }
+        return (
+            {
+                preview: "Vista previa",
+                emitted: "Emitida",
+                blocked: "Bloqueada",
+                unknown: "Resultado desconocido",
+                connection_error: "Sin respuesta",
+            }[job.state] || job.state
+        );
+    }
+
+    licuadoraStateClass(job) {
+        if (job.processing) {
+            return "is-blue";
+        }
+        return { emitted: "is-green", preview: "is-blue", blocked: "is-red", unknown: "is-amber", connection_error: "is-amber" }[job.state] || "";
+    }
+
+    jobKindLabel(job) {
+        if (job.stopAfter === "meli_order") {
+            return job.dryRun ? "Licuadora · vista previa" : "Licuadora";
+        }
+        return job.dryRun ? "Simulación" : "Creación";
+    }
+
     async openBack() {
         if (
             this.isClients ||
@@ -643,13 +826,17 @@ export class LqaAccounting extends Component {
             await this.loadInvoiceIssues();
             return;
         }
+        if (tab === "licuadoras") {
+            await this.loadLicuadoraHistory();
+            return;
+        }
         await this.loadInvoiceCreationJobs(
             this.state.facturacion.invoice.selectedJob?.id || false
         );
     }
 
     async setFacturacionTab(tab) {
-        const allowed = ["create", "queue", "issues"];
+        const allowed = ["create", "queue", "issues", "licuadoras"];
         this.state.facturacion.activeTab = allowed.includes(tab) ? tab : "create";
         if (this.state.facturacion.activeTab !== "queue") {
             this.stopQueuePolling();

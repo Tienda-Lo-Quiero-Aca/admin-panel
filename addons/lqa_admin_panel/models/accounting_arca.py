@@ -4,8 +4,9 @@ import io
 import json
 import os
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import requests
 import xlsxwriter
@@ -1589,6 +1590,285 @@ class LqaAccountingService(models.AbstractModel):
         return parsed if isinstance(parsed, dict) else {}
 
     # ------------------------------------------------------------------
+    # Licuadoras: factura de una venta con entrega en el dia, tomando importe y
+    # comprador de su orden de Mercado Libre.
+    # ------------------------------------------------------------------
+
+    LICUADORA_PATH = "/internal/tlqv-invoice/facturas/create-from-meli-order"
+    LICUADORA_TIMEOUT = 120
+    LICUADORA_MODE = "meli_order"
+    # Una emision "Procesando" mas vieja que esto se trata como resultado
+    # desconocido: el worker pudo morir despues de que Xubio emitiera.
+    LICUADORA_STALE_MINUTES = 5
+    LICUADORA_BLOCKER_KINDS = {
+        "billed": {"ALREADY_BILLED"},
+        "temporary": {
+            "MELI_ORDER_LOOKUP_FAILED",
+            "ORDER_DETAILS_LOOKUP_FAILED",
+            "COSTOS_OPERACIONES_LOOKUP_FAILED",
+            "FISCAL_INFO_UNAVAILABLE",
+            "BILLING_VALIDATION_UNAVAILABLE",
+            "XUBIO_EXISTING_CLIENT_LOOKUP_FAILED",
+        },
+        "fix": {
+            "INVOICE_TOTAL_SALE_PRICE_MISMATCH",
+            "COSTOS_OPERACIONES_NOT_FOUND",
+            "COSTOS_OPERACIONES_SALE_PRICE_MISSING",
+            "ORDER_DETAILS_NOT_FOUND",
+            "MELI_ORDER_NOT_LINKED",
+            "MELI_ORDER_NOT_FOUND",
+            "MELI_BILLING_INFO_MISSING",
+            "INVALID_FISCAL_DOCUMENT",
+            "INVALID_INVOICE_ISSUE_DATE",
+            "XUBIO_INVOICE_DATE_SEQUENCE_ERROR",
+            "XUBIO_INVOICE_CREATION_FAILED",
+        },
+        "cancelled": {"MELI_ORDER_CANCELLED"},
+        "unknown_outcome": {"XUBIO_INVOICE_OUTCOME_UNKNOWN"},
+    }
+
+    def _argentina_today(self):
+        return datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date()
+
+    def _licuadora_emissions(self, tlqv_code):
+        return (
+            self.env["lqa.accounting.invoice.creation.job"]
+            .sudo()
+            .search(
+                [
+                    ("tlqv_code", "=", tlqv_code),
+                    ("stop_after", "=", self.LICUADORA_MODE),
+                    ("dry_run", "=", False),
+                ]
+            )
+        )
+
+    def _licuadora_emission_status(self, tlqv_code):
+        """Lo que ya paso al emitir esta venta: emitida, desconocido o nada."""
+        stale_before = fields.Datetime.now() - timedelta(minutes=self.LICUADORA_STALE_MINUTES)
+        unknown = False
+        for job in self._licuadora_emissions(tlqv_code):
+            payload = self._loads(job.response_payload)
+            created = (payload.get("createdInvoice") or {}).get("invoice") or {}
+            if job.state == "done" and created:
+                return {
+                    "emitted": True,
+                    "numero": self._clean(created.get("numeroDocumento")),
+                    "jobId": job.id,
+                    "at": fields.Datetime.to_string(job.finished_at or job.create_date),
+                    "user": job.user_id.name,
+                }
+            if job.response_status == "outcome_unknown" or (
+                job.state == "processing" and job.create_date < stale_before
+            ):
+                unknown = {
+                    "jobId": job.id,
+                    "at": fields.Datetime.to_string(job.create_date),
+                    "user": job.user_id.name,
+                }
+        return {"emitted": False, "unknown": unknown}
+
+    @api.model
+    def get_licuadora_status(self, tlqv_code):
+        self._check_access()
+        tlqv_code = self._normalize_tlqv(tlqv_code)
+        if not tlqv_code:
+            raise UserError(_("Ingresá un código TLQV válido."))
+        return {"tlqvCode": tlqv_code, **self._licuadora_emission_status(tlqv_code)}
+
+    @api.model
+    def licuadora_invoice(self, tlqv_code, dry_run=True, verified_in_xubio=False):
+        """Vista previa (dry_run) o emision de la factura de una licuadora."""
+        self._check_access()
+        tlqv_code = self._normalize_tlqv(tlqv_code)
+        if not tlqv_code:
+            raise UserError(_("Ingresá un código TLQV válido."))
+        dry_run = dry_run is not False
+        issue_date = self._argentina_today()
+
+        if not dry_run:
+            status = self._licuadora_emission_status(tlqv_code)
+            if status["emitted"]:
+                raise UserError(
+                    _("%(tlqv)s ya se emitió desde el panel (%(numero)s). No se vuelve a emitir.")
+                    % {"tlqv": tlqv_code, "numero": status["numero"] or _("sin número")}
+                )
+            if status["unknown"] and not verified_in_xubio:
+                raise UserError(
+                    _(
+                        "Hay una emisión anterior de %s sin resultado conocido. Buscá la "
+                        "factura en Xubio antes de volver a emitir."
+                    )
+                    % tlqv_code
+                )
+
+        job = self.env["lqa.accounting.invoice.creation.job"].sudo().create(
+            {
+                "name": _("Licuadora %s") % tlqv_code,
+                "user_id": self.env.user.id,
+                "state": "processing",
+                "tlqv_code": tlqv_code,
+                "issue_date": issue_date,
+                "dry_run": dry_run,
+                "stop_after": self.LICUADORA_MODE,
+                "note": _("Verificada en Xubio antes de reemitir") if verified_in_xubio else False,
+                "started_at": fields.Datetime.now(),
+            }
+        )
+        # La emision puede tardar hasta 2 minutos: el registro queda guardado
+        # antes, asi una caida en el medio se ve como "resultado desconocido".
+        self.env.cr.commit()
+
+        body = {"tlqvCode": tlqv_code, "dryRun": dry_run, "issueDate": fields.Date.to_string(issue_date)}
+        try:
+            response = requests.post(
+                self._join_url(self._invoice_base_url(), self.LICUADORA_PATH),
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    **self._invoice_headers(),
+                },
+                json=body,
+                timeout=http_timeout(self.LICUADORA_TIMEOUT),
+            )
+        except requests.RequestException as error:
+            log_http_failure("POST", self.LICUADORA_PATH, error=error)
+            message = describe_request_exception(error, self.LICUADORA_PATH, timeout=self.LICUADORA_TIMEOUT)
+            job.write(
+                {
+                    "state": "failed",
+                    "response_status": "error" if dry_run else "outcome_unknown",
+                    "message": message,
+                    "response_payload": self._json_dumps({"error": message, "request": body}),
+                    "finished_at": fields.Datetime.now(),
+                }
+            )
+            return self._licuadora_result(job, {}, connection_error=message)
+
+        try:
+            payload = response.json() if response.text else {}
+        except ValueError:
+            payload = {"raw": response.text[:2000]}
+        payload = payload if isinstance(payload, dict) else {"raw": payload}
+        status = self._clean(payload.get("status")).lower()
+        blockers = [item for item in self._response_items(payload.get("blockers")) if isinstance(item, dict)]
+        unknown = any(item.get("code") == "XUBIO_INVOICE_OUTCOME_UNKNOWN" for item in blockers)
+        success = 200 <= response.status_code < 300 and status == "completed"
+        message = ""
+        if blockers:
+            message = self._clean(blockers[0].get("message") or blockers[0].get("code"))
+        elif not success:
+            message = self._clean(payload.get("message") or payload.get("error")) or _(
+                "Invoice API respondió %s."
+            ) % response.status_code
+        job.write(
+            {
+                "state": "done" if success else "failed",
+                "http_status": response.status_code,
+                "response_status": "outcome_unknown" if unknown else status,
+                "message": message,
+                "response_payload": self._json_dumps(payload),
+                "finished_at": fields.Datetime.now(),
+                **self._invoice_payload_summary(payload),
+            }
+        )
+        return self._licuadora_result(job, payload)
+
+    def _licuadora_result(self, job, payload, connection_error=""):
+        payload = payload if isinstance(payload, dict) else {}
+        build = payload.get("invoiceBuild") if isinstance(payload.get("invoiceBuild"), dict) else {}
+        invoice = build.get("invoice") if isinstance(build.get("invoice"), dict) else {}
+        items = [item for item in self._response_items(invoice.get("items")) if isinstance(item, dict)]
+        fiscal = ((payload.get("clienteFlow") or {}).get("fiscalInfo")) or {}
+        created = ((payload.get("createdInvoice") or {}).get("invoice")) or {}
+        letter = self._clean((build.get("invoiceLetter") or {}).get("letter") or invoice.get("letter")).upper()
+        total = self._as_float(build.get("totalAmount"))
+        sent = self._as_float(build.get("amountSentToXubio"))
+        blockers = []
+        for item in self._response_items(payload.get("blockers")):
+            if not isinstance(item, dict):
+                continue
+            code = self._clean(item.get("code")).upper()
+            kind = next(
+                (name for name, codes in self.LICUADORA_BLOCKER_KINDS.items() if code in codes),
+                "other",
+            )
+            blockers.append(
+                {
+                    "code": code,
+                    "kind": kind,
+                    "step": self._clean(item.get("step")),
+                    "message": self._clean(item.get("message")),
+                }
+            )
+        if connection_error:
+            state = "connection_error" if job.dry_run else "unknown"
+        elif blockers and any(blocker["kind"] == "unknown_outcome" for blocker in blockers):
+            state = "unknown"
+        elif blockers or job.state == "failed":
+            state = "blocked"
+        elif created:
+            state = "emitted"
+        else:
+            state = "preview"
+        return {
+            "jobId": job.id,
+            "tlqvCode": job.tlqv_code,
+            "dryRun": bool(job.dry_run),
+            "state": state,
+            "issueDate": fields.Date.to_string(job.issue_date) if job.issue_date else "",
+            "message": connection_error or job.message or "",
+            "httpStatus": job.http_status,
+            "blockers": blockers,
+            "amountCheck": payload.get("amountCheck") if isinstance(payload.get("amountCheck"), dict) else None,
+            "invoice": {
+                "cliente": self._clean(fiscal.get("razonSocial")),
+                "documento": self._clean(fiscal.get("documentoNro")),
+                "condicion": self._clean(fiscal.get("condicionImpositiva")),
+                "letra": letter,
+                "total": total,
+                # Factura A: neto e IVA por separado; B: solo el total.
+                "neto": sent if letter == "A" else None,
+                "iva": (total - sent) if letter == "A" and total is not None and sent is not None else None,
+                "fecha": self._clean(invoice.get("issueDate")),
+                "items": [
+                    {"description": self._clean(item.get("description")), "unitPrice": item.get("unitPrice")}
+                    for item in items
+                ],
+                "meliOrderIds": [self._clean(order) for order in self._response_items(build.get("meliOrderIds"))]
+                if isinstance(build.get("meliOrderIds"), list)
+                else [],
+            }
+            if build
+            else None,
+            "created": {
+                "numero": self._clean(created.get("numeroDocumento")),
+                "transaccionId": created.get("transaccionId"),
+                "cae": created.get("cae"),
+            }
+            if created
+            else None,
+        }
+
+    @api.model
+    def get_licuadora_jobs(self, limit=30):
+        self._check_access()
+        limit = min(max(self._as_int(limit, 30), 1), 100)
+        domain = [("stop_after", "=", self.LICUADORA_MODE)]
+        if not self.env.user.has_group("lqa_admin_panel.group_lqa_admin"):
+            domain.append(("user_id", "=", self.env.user.id))
+        jobs = self.env["lqa.accounting.invoice.creation.job"].sudo().search(domain, limit=limit)
+        return [
+            {
+                **self._licuadora_result(job, self._loads(job.response_payload)),
+                "user": job.user_id.name,
+                "createdAt": fields.Datetime.to_string(job.create_date),
+                "processing": job.state == "processing",
+            }
+            for job in jobs
+        ]
+
+    # ------------------------------------------------------------------
     # Dashboard de Administracion
     # ------------------------------------------------------------------
 
@@ -1738,7 +2018,8 @@ class LqaAccountingService(models.AbstractModel):
     def get_invoice_creation_jobs(self, limit=30):
         self._check_access()
         limit = min(max(self._as_int(limit, 30), 1), 200)
-        domain = []
+        # Las licuadoras tienen su propia pestaña e historial.
+        domain = [("stop_after", "!=", self.LICUADORA_MODE)]
         if not self.env.user.has_group("lqa_admin_panel.group_lqa_admin"):
             domain.append(("user_id", "=", self.env.user.id))
         jobs = (
